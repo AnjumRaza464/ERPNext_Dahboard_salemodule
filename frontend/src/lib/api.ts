@@ -1,6 +1,9 @@
 import type { Range } from "./types";
 
-export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8010").replace(/\/$/, "");
+// Local dev talks to uvicorn on :8010 (see .env.local). In production (Vercel services)
+// the API is served from the same origin under /api, so the base is empty.
+const DEFAULT_API_BASE = process.env.NODE_ENV === "production" ? "" : "http://localhost:8010";
+export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? DEFAULT_API_BASE).replace(/\/$/, "");
 
 export class ApiError extends Error {
   status: number;
@@ -24,7 +27,7 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T
     res = await fetch(url, { signal, headers: { Accept: "application/json" } });
   } catch (e) {
     if ((e as Error).name === "AbortError") throw e;
-    throw new ApiError("Backend unreachable. Is the FastAPI server running on " + API_BASE + "?", 0);
+    throw new ApiError("Backend unreachable. Is the FastAPI server running on " + (API_BASE || "this origin") + "?", 0);
   }
   if (!res.ok) {
     let detail = res.statusText;

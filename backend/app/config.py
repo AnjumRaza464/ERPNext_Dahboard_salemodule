@@ -10,8 +10,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     erpnext_url: str = Field(default="https://erp.bnbcloudservices.com")
-    erpnext_api_key: str
-    erpnext_api_secret: str
+    # Empty defaults let the app boot before secrets are configured (e.g. first Vercel deploy);
+    # every ERPNext call then fails with a clear 401 -> 502 instead of an import-time crash.
+    erpnext_api_key: str = ""
+    erpnext_api_secret: str = ""
     erpnext_company: str = "Sindh Bakery"
     frontend_origins: str = "http://localhost:3000"
     cache_ttl_seconds: int = 120

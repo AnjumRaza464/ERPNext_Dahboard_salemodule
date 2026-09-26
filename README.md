@@ -104,11 +104,13 @@ Interactive docs: http://localhost:8010/docs
 
 ## Deploy on Vercel
 
-The repo is deployed as **two Vercel projects** from the same GitHub repository:
+The repo deploys as **one Vercel project with two services** (root `vercel.json`):
 
-| Project | Root Directory | Framework | Environment variables |
+| Service | Root | Framework | Public route |
 |---|---|---|---|
-| Backend API | `backend` | FastAPI (zero-config, entrypoint `app/main.py`) | `ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `FRONTEND_ORIGINS` (= the frontend's Vercel URL), `CACHE_TTL_SECONDS` |
-| Dashboard | `frontend` | Next.js | `NEXT_PUBLIC_API_BASE` (= the backend's Vercel URL, no trailing slash) |
+| `frontend` | `frontend/` | Next.js | everything except `/api/*` |
+| `backend` | `backend/` | FastAPI (`app.main:app`) | `/api/*` (same origin, so no CORS config needed) |
 
-`backend/vercel.json` only raises the function timeout to 60 s for slow ERPNext queries.
+Environment variables (Project Settings -> Environment Variables, shared by both services):
+`ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `CACHE_TTL_SECONDS`.
+Leave `NEXT_PUBLIC_API_BASE` unset on Vercel: in production the frontend calls its own origin.
