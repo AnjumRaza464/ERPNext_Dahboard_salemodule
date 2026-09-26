@@ -101,3 +101,14 @@ Interactive docs: http://localhost:8010/docs
   have their own cost centre / POS profile.
 - One customer (`Walk-in-customer`), one cashier user, one payment mode (Cash),
   no returns and no invoice-level discounts so far.
+
+## Deploy on Vercel
+
+The repo is deployed as **two Vercel projects** from the same GitHub repository:
+
+| Project | Root Directory | Framework | Environment variables |
+|---|---|---|---|
+| Backend API | `backend` | FastAPI (zero-config, entrypoint `app/main.py`) | `ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `FRONTEND_ORIGINS` (= the frontend's Vercel URL), `CACHE_TTL_SECONDS` |
+| Dashboard | `frontend` | Next.js | `NEXT_PUBLIC_API_BASE` (= the backend's Vercel URL, no trailing slash) |
+
+`backend/vercel.json` only raises the function timeout to 60 s for slow ERPNext queries.
