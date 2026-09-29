@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 120
     request_timeout_seconds: float = 60.0
 
+    # Voice assistant (OpenAI). Empty key disables /api/voice/* with a clear 503.
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_transcribe_model: str = "gpt-4o-mini-transcribe"
+    openai_tts_model: str = "gpt-4o-mini-tts"
+    openai_tts_voice: str = "alloy"
+
     @property
     def origins(self) -> list[str]:
         return [o.strip() for o in self.frontend_origins.split(",") if o.strip()]

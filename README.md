@@ -72,6 +72,9 @@ today) and `refresh=1` to bypass the 2-minute in-memory cache.
 | `GET /api/sales/payment-modes` | Cash / Card / … split of settled sales, plus credit remainder | Sales Invoice Payment |
 | `GET /api/sales/composition` | gross → discounts → taxes → returns → net (waterfall) | Sales Invoice |
 | `POST /api/cache/clear` | drop the cache | — |
+| `POST /api/voice/command` | raw audio body (webm/ogg/mp4/wav) -> transcript + dashboard actions + spoken summary | OpenAI |
+| `POST /api/voice/text` | same for a typed sentence `{text}` | OpenAI |
+| `POST /api/voice/speak` | `{text}` -> MP3 of the reply | OpenAI |
 
 Every payload carries `source` (`sales_invoice` or `sales_invoice_item`) and
 `cached` (whether it was served from the 2-minute cache).
@@ -87,6 +90,26 @@ Interactive docs: http://localhost:8010/docs
 3. Trends, mix & patterns: sales trend, 12-month history (MoM), item-group and payment-mode donuts, top items
    (bars or share donut), Pareto / ABC concentration, weekday × hour heatmap, hour / weekday columns, invoice
    value distribution, composition waterfall, outlets, top customers, and the invoice table.
+
+## Voice assistant
+
+The **Voice** button in the header lets you drive the dashboard by speaking (Urdu, Hindi, English or mixed):
+
+| Say | Dashboard does |
+|---|---|
+| "yesterday sale" / "kal ki sale" | range = yesterday, scrolls to the KPI tiles, reads out the total |
+| "comparison" / "muqabla" | scrolls to the comparison block and reads current vs comparison period |
+| "is mahine ka last year se comparison" | range = this month, comparison mode = same period last year |
+| "kal aur parson ka muqabla" | range = yesterday vs custom period = day before |
+| "top items", "customers", "heatmap", "invoices", ... | scrolls to that panel |
+| "refresh karo", "dark mode" | reloads data / switches theme |
+
+Recording stops by itself after a short pause. Speech is transcribed and interpreted by OpenAI on the backend
+(`backend/app/routers/voice.py`); the key (`OPENAI_API_KEY` in `backend/.env`) never reaches the browser. The reply is
+read aloud (OpenAI TTS; mute with the speaker toggle). Commands can also be typed in the panel.
+The microphone only works on `localhost` or `https` (browser rule), not on a plain `http://<LAN-IP>` address.
+On Vercel add `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`) to the project environment variables; note that the
+voice endpoints are public like the rest of the API, so anyone who can open the site can spend OpenAI credits.
 
 ## Notes on this ERPNext instance (verified 26 Sep 2026)
 
@@ -112,5 +135,5 @@ The repo deploys as **one Vercel project with two services** (root `vercel.json`
 | `backend` | `backend/` | FastAPI (`app.main:app`) | `/api/*` (same origin, so no CORS config needed) |
 
 Environment variables (Project Settings -> Environment Variables, shared by both services):
-`ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `CACHE_TTL_SECONDS`.
+`ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `CACHE_TTL_SECONDS`, `OPENAI_API_KEY`, `OPENAI_MODEL`.
 Leave `NEXT_PUBLIC_API_BASE` unset on Vercel: in production the frontend calls its own origin.

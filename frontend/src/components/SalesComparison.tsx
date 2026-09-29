@@ -5,6 +5,7 @@ import { useApi } from "@/hooks/useApi";
 import { toIso } from "@/lib/dates";
 import { fmtDate, fmtPeriod, fmtRange, num, pct, pkr } from "@/lib/format";
 import type { CompareBreakdown, CompareMode, CompareTotals, Range, SalesCompare } from "@/lib/types";
+import type { CompareCommand } from "@/lib/voice";
 import Card from "./Card";
 import GroupedColumns from "./charts/GroupedColumns";
 import HorizontalBars from "./charts/HorizontalBars";
@@ -68,6 +69,8 @@ interface Props {
   range: Range;
   refreshKey: number;
   onRetry: () => void;
+  /** set by the voice assistant; a new nonce switches the mode (and custom period) */
+  command?: CompareCommand;
 }
 
 /**
@@ -76,7 +79,7 @@ interface Props {
  * KPIs side by side, the daily or cumulative curves, and where the difference
  * came from (item groups, items, weekdays, biggest movers).
  */
-export default function SalesComparison({ range, refreshKey, onRetry }: Props) {
+export default function SalesComparison({ range, refreshKey, onRetry, command }: Props) {
   const [mode, setMode] = useState<CompareMode>(() => readStored<CompareMode>("sb-cmp-mode", "previous"));
   const [custom, setCustom] = useState<Range>(() => {
     const stored = readStored<Range | null>("sb-cmp-range", null);
@@ -84,6 +87,17 @@ export default function SalesComparison({ range, refreshKey, onRetry }: Props) {
   });
   const [draft, setDraft] = useState<Range>(custom);
   const [view, setView] = useState<View>("daily");
+  const [seenCommand, setSeenCommand] = useState(command?.nonce);
+
+  // Apply a new voice command during render (React's "adjust state on prop change" pattern).
+  if (command && command.nonce !== seenCommand) {
+    setSeenCommand(command.nonce);
+    setMode(command.mode);
+    if (command.range) {
+      setCustom(command.range);
+      setDraft(command.range);
+    }
+  }
 
   useEffect(() => {
     try {

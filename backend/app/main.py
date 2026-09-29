@@ -16,6 +16,7 @@ from .cache import clear_cache
 from .config import get_settings
 from .erpnext_client import ERPNextError, close_client, get_client
 from .routers import sales as sales_router
+from .routers import voice as voice_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 settings = get_settings()
@@ -45,6 +46,7 @@ async def erpnext_error_handler(_: Request, exc: ERPNextError):
 
 
 app.include_router(sales_router.router)
+app.include_router(voice_router.router)
 
 
 @app.get("/api/health")
@@ -52,6 +54,7 @@ async def health():
     try:
         user = await get_client().ping()
         return {"status": "ok", "erpnext_user": user, "company": settings.erpnext_company,
+                "voice_enabled": bool(settings.openai_api_key),
                 "server_time": datetime.now(timezone.utc).isoformat()}
     except ERPNextError as exc:
         return JSONResponse(status_code=503, content={"status": "error", "detail": exc.message})

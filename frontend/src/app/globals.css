@@ -147,3 +147,18 @@ body {
   border-radius: 8px;
   animation: shimmer 1.4s ease-in-out infinite;
 }
+
+/* Voice assistant: brief highlight on the section it just opened */
+@keyframes voice-flash {
+  0%, 60% {
+    box-shadow: 0 0 0 3px var(--accent);
+    border-radius: 12px;
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+    border-radius: 12px;
+  }
+}
+.voice-flash {
+  animation: voice-flash 2s ease-out;
+}
