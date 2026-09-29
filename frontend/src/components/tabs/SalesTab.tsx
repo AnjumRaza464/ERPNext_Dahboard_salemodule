@@ -11,6 +11,7 @@ import Card from "../Card";
 import InvoicesTable from "../InvoicesTable";
 import KpiCard from "../KpiCard";
 import SalesComparison from "../SalesComparison";
+import { sectionId, type CompareCommand } from "@/lib/voice";
 import ColumnChart from "../charts/ColumnChart";
 import DonutChart from "../charts/DonutChart";
 import HeatmapGrid from "../charts/HeatmapGrid";
@@ -93,6 +94,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
     <>
       <Card
         title="Sales Trend"
+        id={sectionId("trend")}
         subtitle={trend.data ? (trend.data.granularity === "day" ? "Daily invoiced sales (PKR)" : "Monthly invoiced sales (PKR)") : undefined}
         source={trend.data?.source}
         loading={trend.loading}
@@ -107,6 +109,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Monthly Sales History"
+        id={sectionId("monthly")}
         subtitle={
           monthly.data
             ? `Last ${monthly.data.months} months to ${fmtDate(range.end)} · avg full month ${pkr(monthly.data.avg_month)}${bestMonth ? ` · best ${bestMonth.label} ${pkr(bestMonth.total)}` : ""}`
@@ -161,6 +164,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Sales by Item Group"
+        id={sectionId("item_groups")}
         subtitle={groups.data ? `${groups.data.groups.length} groups · ${pkr(groups.data.total_amount)} total` : undefined}
         source={groups.data?.source}
         loading={groups.loading}
@@ -181,6 +185,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Payment Modes"
+        id={sectionId("payment_modes")}
         subtitle={modes.data ? `How ${pkr(modes.data.total)} of invoiced sales was settled` : undefined}
         source={modes.data?.source}
         loading={modes.loading}
@@ -195,6 +200,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Top Items"
+        id={sectionId("top_items")}
         subtitle={items.data ? `Top ${items.data.items.length} of ${items.data.distinct_items} items by sales value` : undefined}
         source={items.data?.source}
         loading={items.loading}
@@ -226,6 +232,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Item Concentration (Pareto / ABC)"
+        id={sectionId("pareto")}
         subtitle={
           pareto.data
             ? `${num(pareto.data.items_for_80_pct)} of ${num(pareto.data.distinct_items)} items make 80% of sales · showing top ${pareto.data.items.length} by share`
@@ -243,6 +250,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Outlet-wise Sales"
+        id={sectionId("outlets")}
         subtitle={outlets.data ? `${outlets.data.outlets.length} outlet${outlets.data.outlets.length === 1 ? "" : "s"} · ${pkr(outlets.data.total)} total` : undefined}
         source={outlets.data?.source}
         loading={outlets.loading}
@@ -287,6 +295,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Sales Composition"
+        id={sectionId("composition")}
         subtitle={composition.data ? `Gross to net · ${num(composition.data.invoice_count)} invoices · discounts ${composition.data.discount_pct}% of gross${composition.data.return_count ? ` · ${composition.data.return_count} returns` : ""}` : undefined}
         source={composition.data?.source}
         loading={composition.loading}
@@ -300,6 +309,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Weekday × Hour Heatmap"
+        id={sectionId("heatmap")}
         subtitle={heat.data ? `Average sales per day for each weekday and hour${heat.data.peak ? ` · peak ${heat.data.peak.weekday} ${String(heat.data.peak.hour).padStart(2, "0")}:00 (${pkr(heat.data.peak.avg_per_day)}/day)` : ""}` : undefined}
         source={heat.data?.source}
         loading={heat.loading}
@@ -315,6 +325,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Sales by Hour of Day"
+        id={sectionId("by_hour")}
         subtitle={hours.data ? `Total sales per hour across ${num(hours.data.active_days)} trading days${hours.data.peak_hour !== null ? ` · peak ${String(hours.data.peak_hour).padStart(2, "0")}:00` : ""}` : undefined}
         source={hours.data?.source}
         loading={hours.loading}
@@ -336,6 +347,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Sales by Weekday"
+        id={sectionId("by_weekday")}
         subtitle={weekdays.data ? `Average sales per day of the week${weekdays.data.best_weekday ? ` · best ${weekdays.data.best_weekday}` : ""}` : undefined}
         source={weekdays.data?.source}
         loading={weekdays.loading}
@@ -356,6 +368,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Invoice Value Distribution"
+        id={sectionId("distribution")}
         subtitle={dist.data ? `${num(dist.data.stats.count)} invoices · median ${pkr(dist.data.stats.median)} · 90% under ${pkr(dist.data.stats.p90)} · max ${pkr(dist.data.stats.max)}` : undefined}
         source={dist.data?.source}
         loading={dist.loading}
@@ -377,6 +390,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
 
       <Card
         title="Top Customers"
+        id={sectionId("customers")}
         subtitle={customers.data ? `Top ${customers.data.customers.length} of ${num(customers.data.distinct_customers)} customers by sales value` : undefined}
         source={customers.data?.source}
         loading={customers.loading}
@@ -425,30 +439,36 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
   );
 }
 
-export function SectionHeading({ title, hint }: { title: string; hint: string }) {
+export function SectionHeading({ title, hint, id }: { title: string; hint: string; id?: string }) {
   return (
-    <div className="mt-1 flex items-baseline gap-2">
+    <div id={id} className="mt-1 flex scroll-mt-4 items-baseline gap-2">
       <h2 className="text-base font-semibold text-ink">{title}</h2>
       <span className="text-xs text-ink-3">{hint}</span>
     </div>
   );
 }
 
-export default function SalesTab({ range, refreshKey, onRetry }: { range: Range; refreshKey: number; onRetry: () => void }) {
+export default function SalesTab({ range, refreshKey, onRetry, compareCommand }: { range: Range; refreshKey: number; onRetry: () => void; compareCommand?: CompareCommand }) {
   const kpis = useApi<SalesKpis>("/api/sales/kpis", range, refreshKey);
   const pace = useApi<RunRate>("/api/sales/run-rate", range, refreshKey);
   const invoices = useApi<InvoicesResponse>("/api/sales/invoices", range, refreshKey);
   return (
     <div className="flex flex-col gap-4">
-      <SalesKpiRow kpis={kpis} />
-      <SalesPaceRow pace={pace} />
-      <SectionHeading title="Comparison" hint="how this range stacks up against another period" />
-      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} />
+      <div id={sectionId("kpis")} className="scroll-mt-24">
+        <SalesKpiRow kpis={kpis} />
+      </div>
+      <div id={sectionId("pace")} className="scroll-mt-4">
+        <SalesPaceRow pace={pace} />
+      </div>
+      <SectionHeading id={sectionId("comparison")} title="Comparison" hint="how this range stacks up against another period" />
+      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} command={compareCommand} />
       <SectionHeading title="Trends, Mix & Patterns" hint="what sells, when, and how it is paid for" />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <SalesCharts range={range} refreshKey={refreshKey} onRetry={onRetry} />
       </div>
-      <InvoicesTable state={invoices} range={range} onRetry={onRetry} />
+      <div id={sectionId("invoices")} className="scroll-mt-4">
+        <InvoicesTable state={invoices} range={range} onRetry={onRetry} />
+      </div>
     </div>
   );
 }

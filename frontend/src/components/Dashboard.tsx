@@ -2,16 +2,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE, fetchJson } from "@/lib/api";
-import { isPreset, presetRange, type Preset } from "@/lib/dates";
+import { isPreset, PRESETS, presetRange, type Preset } from "@/lib/dates";
 import { fmtRange, fmtTime } from "@/lib/format";
-import type { Range } from "@/lib/types";
+import type { CompareMode, Range } from "@/lib/types";
+import { sectionId, type CompareCommand, type VoiceActions, type VoiceContext, type VoiceSection } from "@/lib/voice";
 import DateFilter from "./DateFilter";
 import SalesTab from "./tabs/SalesTab";
+import VoiceAssistant from "./VoiceAssistant";
 
 interface Health {
   status: string;
   erpnext_user?: string;
   company?: string;
+  voice_enabled?: boolean;
 }
 
 function readStored<T>(key: string, fallback: T): T {
@@ -21,6 +24,31 @@ function readStored<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+/** The preset whose dates equal `r` (so "aaj ki sale" lights up the Today tab), else custom. */
+function presetFor(r: Range): Preset {
+  return PRESETS.find((p) => p.id !== "custom" && presetRange(p.id).start === r.start && presetRange(p.id).end === r.end)?.id ?? "custom";
+}
+
+/** Scroll a dashboard section into view and flash it briefly. */
+function revealSection(section: VoiceSection) {
+  // wait a frame so a range change has re-rendered before measuring
+  setTimeout(() => {
+    const el = document.getElementById(sectionId(section));
+    if (!el) return;
+    const go = (behavior: ScrollBehavior) => (section === "kpis" ? window.scrollTo({ top: 0, behavior }) : el.scrollIntoView({ behavior, block: "start" }));
+    go("smooth");
+    // Charts reloading for a new range can shift the layout mid-scroll (and background tabs skip
+    // smooth scrolling), so snap into place if the section did not end up near the top.
+    setTimeout(() => {
+      if (Math.abs(el.getBoundingClientRect().top) > 60 && !(section === "kpis" && window.scrollY === 0)) go("auto");
+    }, 900);
+    el.classList.remove("voice-flash");
+    void el.offsetWidth; // restart the animation
+    el.classList.add("voice-flash");
+    setTimeout(() => el.classList.remove("voice-flash"), 2200);
+  }, 120);
 }
 
 export default function Dashboard() {
@@ -49,6 +77,7 @@ export default function Dashboard() {
   const [health, setHealth] = useState<Health | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
+  const [compareCommand, setCompareCommand] = useState<CompareCommand | undefined>(undefined);
 
   useEffect(() => {
     try {
@@ -88,8 +117,7 @@ export default function Dashboard() {
     setRange(p === "custom" ? r : presetRange(p));
   };
 
-  const toggleTheme = () => {
-    const next = !dark;
+  const setTheme = (next: boolean) => {
     setDark(next);
     document.documentElement.classList.toggle("dark", next);
     try {
@@ -98,8 +126,27 @@ export default function Dashboard() {
       /* ignore */
     }
   };
+  const toggleTheme = () => setTheme(!dark);
 
-  const tabProps = { range, refreshKey, onRetry: refresh };
+  // What the voice assistant needs to resolve "comparison" / relative requests.
+  const voiceContext = (): VoiceContext => ({
+    range,
+    cmpMode: readStored<CompareMode>("sb-cmp-mode", "previous"),
+    cmpRange: readStored<Range | undefined>("sb-cmp-range", undefined),
+  });
+
+  const applyVoice = (a: VoiceActions) => {
+    if (a.range) {
+      setPreset(presetFor(a.range));
+      setRange(a.range);
+    }
+    if (a.compare) setCompareCommand({ ...a.compare, nonce: Date.now() });
+    if (a.theme) setTheme(a.theme === "dark");
+    if (a.refresh) refresh();
+    if (a.section) revealSection(a.section);
+  };
+
+  const tabProps = { range, refreshKey, onRetry: refresh, compareCommand };
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-4 px-4 py-4 sm:px-6">
@@ -117,6 +164,7 @@ export default function Dashboard() {
             {healthError ? "Backend offline" : health ? "ERPNext connected" : "Connecting…"}
           </span>
           {lastRefresh && <span className="hidden text-xs text-ink-3 md:inline">Updated {fmtTime(lastRefresh)}</span>}
+          <VoiceAssistant enabled={health?.voice_enabled !== false} getContext={voiceContext} onActions={applyVoice} />
           <button
             onClick={refresh}
             className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink hover:bg-surface-2"
@@ -151,7 +199,7 @@ export default function Dashboard() {
       <div className="card flex flex-wrap items-center justify-between gap-3 px-3 py-2.5">
         <h2 className="px-1 text-sm font-semibold text-ink">Sales</h2>
         <div className="flex flex-wrap items-center gap-3">
-          <DateFilter preset={preset} range={range} onChange={onRangeChange} />
+          <DateFilter key={`${range.start}|${range.end}`} preset={preset} range={range} onChange={onRangeChange} />
           <span className="tnum text-xs text-ink-3">{fmtRange(range.start, range.end)}</span>
         </div>
       </div>

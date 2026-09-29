@@ -33,13 +33,15 @@ interface CardProps {
   height?: number;
   children: ReactNode;
   className?: string;
+  /** anchor for voice navigation */
+  id?: string;
 }
 
 export default function Card({
-  title, subtitle, source, loading, refreshing, error, empty, emptyHint, onRetry, action, height = 260, children, className = "",
+  title, subtitle, source, loading, refreshing, error, empty, emptyHint, onRetry, action, height = 260, children, className = "", id,
 }: CardProps) {
   return (
-    <section className={`card flex flex-col p-4 sm:p-5 ${className}`}>
+    <section id={id} className={`card flex scroll-mt-4 flex-col p-4 sm:p-5 ${className}`}>
       <header className="mb-3 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-ink">{title}</h3>
