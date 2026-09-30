@@ -1,57 +1,75 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApi } from "@/hooks/useApi";
+import { toIso } from "@/lib/dates";
 import { fmtDate, fmtRange, num, pct, pkr } from "@/lib/format";
 import type {
-  HourlySales, InvoicesResponse, ItemGroupSales, ItemPareto, MonthlySales, OutletSales, PaymentModes, Range, RunRate,
-  SalesComposition, SalesHeatmap, SalesKpis, TopCustomers, TopItems, WeekdaySales,
+  CompareMode, InvoicesResponse, ItemGroupSales, MonthlySales, OutletSales, PaymentModes, Range, RunRate, SalesKpis, TopCustomers, TopItems,
 } from "@/lib/types";
 import Card from "../Card";
+import DeltaText from "../DeltaText";
+import GuardrailLine from "../GuardrailLine";
 import InvoicesTable from "../InvoicesTable";
 import KpiCard from "../KpiCard";
 import LiveCompare from "../LiveCompare";
-import SalesComparison from "../SalesComparison";
+import MorningBrief from "../MorningBrief";
+import PmixTable from "../PmixTable";
+import SalesComparison, { lastYearUnavailable } from "../SalesComparison";
+import TargetTile from "../TargetTile";
+import WeeklyRhythm from "../WeeklyRhythm";
 import { sectionId, type CompareCommand, type LiveCommand } from "@/lib/voice";
 import ColumnChart from "../charts/ColumnChart";
 import DonutChart from "../charts/DonutChart";
-import HeatmapGrid from "../charts/HeatmapGrid";
 import HorizontalBars from "../charts/HorizontalBars";
-import ParetoChart from "../charts/ParetoChart";
-import WaterfallChart from "../charts/WaterfallChart";
 
-export function SalesKpiRow({ kpis }: { kpis: ReturnType<typeof useApi<SalesKpis>> }) {
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function readStored<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? (JSON.parse(v) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Calendar month before the range start: a sensible first custom comparison. */
+function defaultCustom(range: Range): Range {
+  const d = new Date(range.start + "T00:00:00");
+  return { start: toIso(new Date(d.getFullYear(), d.getMonth() - 1, 1)), end: toIso(new Date(d.getFullYear(), d.getMonth(), 0)) };
+}
+
+/** Headline tiles on bills (POS Invoice): net sales, bills, average bill, quantity. */
+export function SalesKpiRow({ kpis, cmpLabel }: { kpis: ReturnType<typeof useApi<SalesKpis>>; cmpLabel: string }) {
   const c = kpis.data?.current;
   const d = kpis.data?.delta_pct;
   const prev = kpis.data ? fmtRange(kpis.data.previous_range.start, kpis.data.previous_range.end) : undefined;
   const common = { loading: kpis.loading, refreshing: kpis.refreshing, error: !!kpis.error };
+  const extras: string[] = [];
+  if (c?.discounts) extras.push(`disc ${pkr(c.discounts)}`);
+  if (c?.returns_total) extras.push(`returns ${pkr(Math.abs(c.returns_total))}`);
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-      <KpiCard label="Total Sales" value={pkr(c?.total_sales)} delta={d?.total_sales} sub={prev && `vs ${prev}`} {...common} />
-      <KpiCard label="Invoice Count" value={num(c?.invoice_count)} delta={d?.invoice_count} sub={c && c.return_count ? `${c.return_count} returns` : undefined} {...common} />
-      <KpiCard label="Avg Invoice Value" value={pkr(c?.avg_invoice_value)} delta={d?.avg_invoice_value} {...common} />
-      <KpiCard label="Qty Sold" value={num(c?.total_qty)} delta={d?.total_qty} sub={c && c.invoice_count ? `${num(c.total_qty / c.invoice_count, 1)} per invoice` : undefined} {...common} />
-      <KpiCard label="Outstanding" value={pkr(c?.outstanding)} delta={d?.outstanding} invert sub={c ? "on invoices in range" : undefined} {...common} />
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <KpiCard label="Net Sales" value={pkr(c?.net_sales)} delta={d?.net_sales} sub={prev ? `vs ${cmpLabel} ${prev}${extras.length ? " · " + extras.join(" · ") : ""}` : undefined} {...common} />
+      <KpiCard label="Bills" value={num(c?.checks)} delta={d?.checks} sub={c ? `${num(c.checks_per_trading_day, 1)} per trading din · ${num(c.active_days)} din` : undefined} {...common} />
+      <KpiCard label="Avg Bill" value={pkr(c?.avg_check)} delta={d?.avg_check} sub={c ? (c.excluded_days.length ? `excl. ${c.excluded_days.length} bulk-entry din` : "net sales ÷ bills") : undefined} {...common} />
+      <KpiCard label="Qty Sold" value={num(c?.total_qty)} delta={d?.total_qty} sub={c && c.checks ? `${num(c.items_per_check, 1)} per bill` : undefined} {...common} />
     </div>
   );
 }
 
-/** Daily pace tiles: how fast sales are coming in and where the month is heading. */
-export function SalesPaceRow({ pace }: { pace: ReturnType<typeof useApi<RunRate>> }) {
+/** Pace tiles: how fast sales come in per trading day, best / lowest day, and the month against its target. */
+export function SalesPaceRow({ pace, onTargetChange }: { pace: ReturnType<typeof useApi<RunRate>>; onTargetChange: (v: number | null) => void }) {
   const r = pace.data;
-  const m = r?.month;
   const common = { loading: pace.loading, refreshing: pace.refreshing, error: !!pace.error };
+  const excl = r?.excluded_days.length ? ` · excl. ${r.excluded_days.length} bulk-entry din` : "";
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <KpiCard label="Avg per Active Day" value={pkr(r?.avg_per_active_day)} sub={r ? `${num(r.active_days)} of ${num(r.calendar_days)} days had sales · ${pkr(r.avg_per_day)} per calendar day` : undefined} {...common} />
-      <KpiCard label="Best Day" value={pkr(r?.best_day?.total)} sub={r?.best_day ? `${fmtDate(r.best_day.date)} · ${num(r.best_day.invoice_count)} invoices` : r ? "no sales in range" : undefined} {...common} />
-      <KpiCard label="Lowest Day" value={pkr(r?.worst_day?.total)} sub={r?.worst_day ? `${fmtDate(r.worst_day.date)} · ${num(r.worst_day.invoice_count)} invoices` : r ? "no sales in range" : undefined} {...common} />
-      <KpiCard
-        label={m ? (m.is_complete ? `${m.label} Total` : `Projected ${m.label}`) : "Projected Month"}
-        value={pkr(m?.is_complete ? m.mtd : m?.projected)}
-        sub={m ? (m.is_complete ? `${num(m.active_days)} active days · ${pkr(m.avg_per_day)} per day` : `${pkr(m.mtd)} so far · ${num(m.remaining_days)} days left at ${pkr(m.avg_per_day)}/day`) : undefined}
-        {...common}
-      />
+      <KpiCard label="Avg per Trading Day" value={pkr(r?.avg_per_active_day)} sub={r ? `${num(r.active_days)} of ${num(r.calendar_days)} din had bills · ${num(r.avg_checks_per_active_day, 1)} bills/din${excl}` : undefined} {...common} />
+      <KpiCard label="Best Day" value={pkr(r?.best_day?.total)} sub={r?.best_day ? `${fmtDate(r.best_day.date)} · ${num(r.best_day.checks)} bills` : r ? "no bills in range" : undefined} {...common} />
+      <KpiCard label="Lowest Day" value={pkr(r?.worst_day?.total)} sub={r?.worst_day ? `${fmtDate(r.worst_day.date)} · ${num(r.worst_day.checks)} bills` : r ? "no bills in range" : undefined} {...common} />
+      <TargetTile pace={pace} onTargetChange={onTargetChange} />
     </div>
   );
 }
@@ -71,22 +89,41 @@ function ViewToggle<T extends string>({ value, options, onChange }: { value: T; 
   );
 }
 
-export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refreshKey: number; onRetry: () => void }) {
+type MonthMetric = "sales" | "checks" | "qty";
+
+export function SalesCharts({ range, refreshKey, onRetry, cmpMode, cmpCustom }: { range: Range; refreshKey: number; onRetry: () => void; cmpMode: CompareMode; cmpCustom: Range }) {
   const monthly = useApi<MonthlySales>("/api/sales/monthly", range, refreshKey, { months: 12 });
   const items = useApi<TopItems>("/api/sales/top-items", range, refreshKey, { limit: 10 });
-  const pareto = useApi<ItemPareto>("/api/sales/item-pareto", range, refreshKey, { limit: 30 });
   const outlets = useApi<OutletSales>("/api/sales/by-outlet", range, refreshKey);
   const groups = useApi<ItemGroupSales>("/api/sales/by-item-group", range, refreshKey);
   const modes = useApi<PaymentModes>("/api/sales/payment-modes", range, refreshKey);
-  const hours = useApi<HourlySales>("/api/sales/by-hour", range, refreshKey);
-  const weekdays = useApi<WeekdaySales>("/api/sales/by-weekday", range, refreshKey);
-  const heat = useApi<SalesHeatmap>("/api/sales/heatmap", range, refreshKey);
-  const composition = useApi<SalesComposition>("/api/sales/composition", range, refreshKey);
   const customers = useApi<TopCustomers>("/api/sales/top-customers", range, refreshKey, { limit: 10 });
   const [itemsView, setItemsView] = useState<"bars" | "donut">("donut");
+  const [monthMetric, setMonthMetric] = useState<MonthMetric>("sales");
+  const [more, setMore] = useState<boolean>(() => readStored<boolean>("sb-more", false));
+  useEffect(() => {
+    try {
+      localStorage.setItem("sb-more", JSON.stringify(more));
+    } catch {
+      /* ignore */
+    }
+  }, [more]);
 
-  const monthRows = monthly.data ? monthly.data.points.map((p) => ({ ...p, value: p.total })) : [];
+  const monthRows = monthly.data
+    ? monthly.data.points.map((p) => ({ ...p, value: monthMetric === "sales" ? p.total : monthMetric === "checks" ? p.checks : p.qty }))
+    : [];
   const bestMonth = monthly.data?.points.find((p) => p.period === monthly.data?.best_month);
+  const monthFmt = (v: number) => (monthMetric === "sales" ? pkr(v) : num(v));
+
+  // Cards that carry no information on this data set (one outlet, one walk-in customer, cash only)
+  // stay out of the way until asked for.
+  const singleOutlet = !!outlets.data && outlets.data.outlets.length <= 1;
+  const singleMode = !!modes.data && modes.data.modes.length <= 1;
+  const singleCustomer = !!customers.data && customers.data.distinct_customers <= 1;
+  const hiddenCount = [singleOutlet, singleMode, singleCustomer].filter(Boolean).length;
+  const showOutlets = !singleOutlet || more;
+  const showModes = !singleMode || more;
+  const showCustomers = !singleCustomer || more;
 
   return (
     <>
@@ -105,6 +142,7 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
         empty={!!monthly.data && monthly.data.total === 0}
         onRetry={onRetry}
         className="lg:col-span-2"
+        action={<ViewToggle value={monthMetric} options={[{ id: "sales", label: "Sales" }, { id: "checks", label: "Bills" }, { id: "qty", label: "Qty" }]} onChange={setMonthMetric} />}
       >
         {monthly.data && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
@@ -112,8 +150,9 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
               <ColumnChart
                 rows={monthRows}
                 colors={monthRows.map((p) => (p.is_partial ? "var(--ord-2)" : "var(--series-1)"))}
-                format={(v, e) => `${pkr(v)} · ${num(Number(e.payload?.invoice_count))} inv · MoM ${pct(e.payload?.mom_pct as number | null)}${e.payload?.is_partial ? " · month in progress" : ""}`}
-                seriesName="Sales"
+                format={(v, e) => `${monthFmt(v)} · ${num(Number(e.payload?.checks))} bills · avg bill ${pkr(Number(e.payload?.avg_check))} · MoM ${pct(e.payload?.mom_pct as number | null)}${e.payload?.is_partial ? " · month in progress" : ""}${(e.payload?.excluded_days as string[] | undefined)?.length ? " · incl. opening entries" : ""}`}
+                seriesName={monthMetric === "sales" ? "Sales" : monthMetric === "checks" ? "Bills" : "Qty"}
+                yFormat={monthMetric === "sales" ? undefined : (v) => num(v)}
               />
             </div>
             <table className="w-full self-start text-xs lg:col-span-2">
@@ -121,8 +160,8 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
                 <tr className={thead}>
                   <th className={th}>Month</th>
                   <th className={`${th} text-right`}>Sales</th>
-                  <th className={`${th} text-right`}>Inv</th>
-                  <th className={`${th} text-right`}>Avg/day</th>
+                  <th className={`${th} text-right`}>Bills</th>
+                  <th className={`${th} text-right`}>Avg bill</th>
                   <th className={`${th} text-right`}>MoM</th>
                 </tr>
               </thead>
@@ -132,11 +171,12 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
                     <td className="py-1.5 text-ink">
                       {p.label}
                       {p.is_partial && <span className="ml-1 text-[10px] text-ink-3">(to date)</span>}
+                      {p.excluded_days.length > 0 && <span className="ml-1 text-[10px] text-warn" title={`bulk / opening entries on ${p.excluded_days.map((d) => fmtDate(d)).join(", ")}; left out of the average bill`}>incl. opening entries</span>}
                     </td>
                     <td className="py-1.5 text-right font-medium text-ink">{pkr(p.total)}</td>
-                    <td className="py-1.5 text-right text-ink-2">{num(p.invoice_count)}</td>
-                    <td className="py-1.5 text-right text-ink-2">{pkr(p.avg_per_day)}</td>
-                    <td className={`py-1.5 text-right ${p.mom_pct === null ? "text-ink-3" : p.mom_pct >= 0 ? "text-good" : "text-bad"}`}>{pct(p.mom_pct)}</td>
+                    <td className="py-1.5 text-right text-ink-2">{num(p.checks)}</td>
+                    <td className="py-1.5 text-right text-ink-2">{p.avg_check ? pkr(p.avg_check) : "—"}</td>
+                    <td className="py-1.5 text-right"><DeltaText value={p.mom_pct} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -144,6 +184,10 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
           </div>
         )}
       </Card>
+
+      <div className="lg:col-span-2">
+        <PmixTable range={range} refreshKey={refreshKey} mode={cmpMode} cmpRange={cmpCustom} onRetry={onRetry} />
+      </div>
 
       <Card
         title="Sales by Item Group"
@@ -164,21 +208,6 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
             centerLabel="Sales"
           />
         )}
-      </Card>
-
-      <Card
-        title="Payment Modes"
-        id={sectionId("payment_modes")}
-        subtitle={modes.data ? `How ${pkr(modes.data.total)} of invoiced sales was settled` : undefined}
-        source={modes.data?.source}
-        loading={modes.loading}
-        refreshing={modes.refreshing}
-        error={modes.error}
-        empty={!!modes.data && modes.data.modes.length === 0}
-        onRetry={onRetry}
-        height={200}
-      >
-        {modes.data && <DonutChart rows={modes.data.modes.map((m) => ({ label: m.mode, value: m.amount, note: `${num(m.count)} inv` }))} total={modes.data.total} centerLabel="Settled" />}
       </Card>
 
       <Card
@@ -213,189 +242,127 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
           ))}
       </Card>
 
-      <Card
-        title="Item Concentration (Pareto / ABC)"
-        id={sectionId("pareto")}
-        subtitle={
-          pareto.data
-            ? `${num(pareto.data.items_for_80_pct)} of ${num(pareto.data.distinct_items)} items make 80% of sales · showing top ${pareto.data.items.length} by share`
-            : undefined
-        }
-        source={pareto.data?.source}
-        loading={pareto.loading}
-        refreshing={pareto.refreshing}
-        error={pareto.error}
-        empty={!!pareto.data && pareto.data.items.length === 0}
-        onRetry={onRetry}
-      >
-        {pareto.data && <ParetoChart data={pareto.data} />}
-      </Card>
-
-      <Card
-        title="Outlet-wise Sales"
-        id={sectionId("outlets")}
-        subtitle={outlets.data ? `${outlets.data.outlets.length} outlet${outlets.data.outlets.length === 1 ? "" : "s"} · ${pkr(outlets.data.total)} total` : undefined}
-        source={outlets.data?.source}
-        loading={outlets.loading}
-        refreshing={outlets.refreshing}
-        error={outlets.error}
-        empty={!!outlets.data && outlets.data.outlets.length === 0}
-        onRetry={onRetry}
-      >
-        {outlets.data && (
-          <div className="flex h-full flex-col gap-3">
-            <HorizontalBars
-              rows={outlets.data.outlets.map((o) => ({ label: o.outlet, value: o.total, count: o.invoice_count, share: o.share_pct }))}
-              format={(v, e) => `${pkr(v)} · ${e.payload?.count} inv · ${e.payload?.share}%`}
-              height={Math.max(120, outlets.data.outlets.length * 36 + 30)}
-              seriesName="Sales"
-            />
-            <table className="w-full text-xs">
-              <thead>
-                <tr className={thead}>
-                  <th className={th}>Outlet</th>
-                  <th className={`${th} text-right`}>Invoices</th>
-                  <th className={`${th} text-right`}>Avg Invoice</th>
-                  <th className={`${th} text-right`}>Sales</th>
-                  <th className={`${th} text-right`}>Share</th>
-                </tr>
-              </thead>
-              <tbody className="tnum">
-                {outlets.data.outlets.map((o) => (
-                  <tr key={o.outlet + (o.pos_profile ?? "")} className="border-b border-line/60">
-                    <td className="py-1.5 text-ink" title={o.pos_profile ?? undefined}>{o.outlet}</td>
-                    <td className="py-1.5 text-right text-ink-2">{num(o.invoice_count)}</td>
-                    <td className="py-1.5 text-right text-ink-2">{pkr(o.avg_invoice_value)}</td>
-                    <td className="py-1.5 text-right font-medium text-ink">{pkr(o.total)}</td>
-                    <td className="py-1.5 text-right text-ink-2">{o.share_pct}%</td>
+      {showOutlets && (
+        <Card
+          title="Outlet-wise Sales"
+          id={sectionId("outlets")}
+          subtitle={outlets.data ? `${outlets.data.outlets.length} outlet${outlets.data.outlets.length === 1 ? "" : "s"} · ${pkr(outlets.data.total)} total` : undefined}
+          source={outlets.data?.source}
+          loading={outlets.loading}
+          refreshing={outlets.refreshing}
+          error={outlets.error}
+          empty={!!outlets.data && outlets.data.outlets.length === 0}
+          onRetry={onRetry}
+          className={showModes || showCustomers ? "" : "lg:col-span-2"}
+        >
+          {outlets.data && (
+            <div className="flex h-full flex-col gap-3">
+              <HorizontalBars
+                rows={outlets.data.outlets.map((o) => ({ label: o.outlet, value: o.total, count: o.checks, share: o.share_pct }))}
+                format={(v, e) => `${pkr(v)} · ${e.payload?.count} bills · ${e.payload?.share}%`}
+                height={Math.max(120, outlets.data.outlets.length * 36 + 30)}
+                seriesName="Sales"
+              />
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className={thead}>
+                    <th className={th}>Outlet</th>
+                    <th className={`${th} text-right`}>Bills</th>
+                    <th className={`${th} text-right`}>Avg bill</th>
+                    <th className={`${th} text-right`}>Sales</th>
+                    <th className={`${th} text-right`}>Share</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+                </thead>
+                <tbody className="tnum">
+                  {outlets.data.outlets.map((o) => (
+                    <tr key={o.outlet + (o.pos_profile ?? "")} className="border-b border-line/60">
+                      <td className="py-1.5 text-ink" title={o.pos_profile ?? undefined}>{o.outlet}</td>
+                      <td className="py-1.5 text-right text-ink-2">{num(o.checks)}</td>
+                      <td className="py-1.5 text-right text-ink-2">{pkr(o.avg_invoice_value)}</td>
+                      <td className="py-1.5 text-right font-medium text-ink">{pkr(o.total)}</td>
+                      <td className="py-1.5 text-right text-ink-2">{o.share_pct}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
 
-      <Card
-        title="Sales Composition"
-        id={sectionId("composition")}
-        subtitle={composition.data ? `Gross to net · ${num(composition.data.invoice_count)} invoices · discounts ${composition.data.discount_pct}% of gross${composition.data.return_count ? ` · ${composition.data.return_count} returns` : ""}` : undefined}
-        source={composition.data?.source}
-        loading={composition.loading}
-        refreshing={composition.refreshing}
-        error={composition.error}
-        empty={!!composition.data && composition.data.gross === 0}
-        onRetry={onRetry}
-      >
-        {composition.data && <WaterfallChart steps={composition.data.steps} />}
-      </Card>
+      {showModes && (
+        <Card
+          title="Payment Modes"
+          id={sectionId("payment_modes")}
+          subtitle={modes.data ? `How ${pkr(modes.data.total)} of bills was settled` : undefined}
+          source={modes.data?.source}
+          loading={modes.loading}
+          refreshing={modes.refreshing}
+          error={modes.error}
+          empty={!!modes.data && modes.data.modes.length === 0}
+          onRetry={onRetry}
+          height={200}
+        >
+          {modes.data && <DonutChart rows={modes.data.modes.map((m) => ({ label: m.mode, value: m.amount, note: `${num(m.count)} bills` }))} total={modes.data.total} centerLabel="Settled" />}
+        </Card>
+      )}
 
-      <Card
-        title="Weekday × Hour Heatmap"
-        id={sectionId("heatmap")}
-        subtitle={heat.data ? `Average sales per day for each weekday and hour${heat.data.peak ? ` · peak ${heat.data.peak.weekday} ${String(heat.data.peak.hour).padStart(2, "0")}:00 (${pkr(heat.data.peak.avg_per_day)}/day)` : ""}` : undefined}
-        source={heat.data?.source}
-        loading={heat.loading}
-        refreshing={heat.refreshing}
-        error={heat.error}
-        empty={!!heat.data && heat.data.max_avg === 0}
-        onRetry={onRetry}
-        className="lg:col-span-2"
-        height={240}
-      >
-        {heat.data && <HeatmapGrid data={heat.data} />}
-      </Card>
-
-      <Card
-        title="Sales by Hour of Day"
-        id={sectionId("by_hour")}
-        subtitle={hours.data ? `Total sales per hour across ${num(hours.data.active_days)} trading days${hours.data.peak_hour !== null ? ` · peak ${String(hours.data.peak_hour).padStart(2, "0")}:00` : ""}` : undefined}
-        source={hours.data?.source}
-        loading={hours.loading}
-        refreshing={hours.refreshing}
-        error={hours.error}
-        empty={!!hours.data && hours.data.points.every((p) => p.total === 0)}
-        onRetry={onRetry}
-      >
-        {hours.data && (
-          <ColumnChart
-            rows={hours.data.points.map((p) => ({ label: p.label, value: p.total, count: p.invoice_count, avg: p.avg_per_day, hour: p.hour }))}
-            format={(v, e) => `${pkr(v)} · ${e.payload?.count} inv · ${pkr(Number(e.payload?.avg))}/day`}
-            seriesName="Sales"
-            tickEvery={3}
-            highlight={(r) => r.hour === hours.data!.peak_hour}
-          />
-        )}
-      </Card>
-
-      <Card
-        title="Sales by Weekday"
-        id={sectionId("by_weekday")}
-        subtitle={weekdays.data ? `Average sales per day of the week${weekdays.data.best_weekday ? ` · best ${weekdays.data.best_weekday}` : ""}` : undefined}
-        source={weekdays.data?.source}
-        loading={weekdays.loading}
-        refreshing={weekdays.refreshing}
-        error={weekdays.error}
-        empty={!!weekdays.data && weekdays.data.points.every((p) => p.total === 0)}
-        onRetry={onRetry}
-      >
-        {weekdays.data && (
-          <ColumnChart
-            rows={weekdays.data.points.map((p) => ({ label: p.weekday, value: p.avg_per_day, total: p.total, count: p.invoice_count, occ: p.occurrences }))}
-            format={(v, e) => `${pkr(v)}/day · ${pkr(Number(e.payload?.total))} over ${e.payload?.occ} days · ${e.payload?.count} inv`}
-            seriesName="Avg / day"
-            highlight={(r) => r.label === weekdays.data!.best_weekday}
-          />
-        )}
-      </Card>
-
-      <Card
-        title="Top Customers"
-        id={sectionId("customers")}
-        subtitle={customers.data ? `Top ${customers.data.customers.length} of ${num(customers.data.distinct_customers)} customers by sales value` : undefined}
-        source={customers.data?.source}
-        loading={customers.loading}
-        refreshing={customers.refreshing}
-        error={customers.error}
-        empty={!!customers.data && customers.data.customers.length === 0}
-        onRetry={onRetry}
-        className="lg:col-span-2"
-      >
-        {customers.data && (
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <HorizontalBars
-              rows={customers.data.customers.map((c) => ({ label: c.customer_name, value: c.total, count: c.invoice_count, share: c.share_pct }))}
-              format={(v, e) => `${pkr(v)} · ${e.payload?.count} inv · ${e.payload?.share}%`}
-              seriesName="Sales"
-              height={Math.max(160, customers.data.customers.length * 30 + 24)}
-            />
-            <table className="w-full self-start text-xs">
-              <thead>
-                <tr className={thead}>
-                  <th className={th}>Customer</th>
-                  <th className={`${th} text-right`}>Invoices</th>
-                  <th className={`${th} text-right`}>Avg Invoice</th>
-                  <th className={`${th} text-right`}>Sales</th>
-                  <th className={`${th} text-right`}>Outstanding</th>
-                  <th className={`${th} text-right`}>Last</th>
-                </tr>
-              </thead>
-              <tbody className="tnum">
-                {customers.data.customers.map((c) => (
-                  <tr key={c.customer} className="border-b border-line/60">
-                    <td className="py-1.5 text-ink">{c.customer_name}</td>
-                    <td className="py-1.5 text-right text-ink-2">{num(c.invoice_count)}</td>
-                    <td className="py-1.5 text-right text-ink-2">{pkr(c.avg_invoice_value)}</td>
-                    <td className="py-1.5 text-right font-medium text-ink">{pkr(c.total)}</td>
-                    <td className={`py-1.5 text-right ${c.outstanding > 0 ? "text-warn" : "text-ink-2"}`}>{pkr(c.outstanding)}</td>
-                    <td className="py-1.5 text-right text-ink-2">{fmtDate(c.last_invoice)}</td>
+      {showCustomers && (
+        <Card
+          title="Top Customers"
+          id={sectionId("customers")}
+          subtitle={customers.data ? `Top ${customers.data.customers.length} of ${num(customers.data.distinct_customers)} customers by sales value` : undefined}
+          source={customers.data?.source}
+          loading={customers.loading}
+          refreshing={customers.refreshing}
+          error={customers.error}
+          empty={!!customers.data && customers.data.customers.length === 0}
+          onRetry={onRetry}
+          className="lg:col-span-2"
+        >
+          {customers.data && (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <HorizontalBars
+                rows={customers.data.customers.map((c) => ({ label: c.customer_name, value: c.total, count: c.checks, share: c.share_pct }))}
+                format={(v, e) => `${pkr(v)} · ${e.payload?.count} bills · ${e.payload?.share}%`}
+                seriesName="Sales"
+                height={Math.max(160, customers.data.customers.length * 30 + 24)}
+              />
+              <table className="w-full self-start text-xs">
+                <thead>
+                  <tr className={thead}>
+                    <th className={th}>Customer</th>
+                    <th className={`${th} text-right`}>Bills</th>
+                    <th className={`${th} text-right`}>Avg bill</th>
+                    <th className={`${th} text-right`}>Sales</th>
+                    <th className={`${th} text-right`}>Last</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+                </thead>
+                <tbody className="tnum">
+                  {customers.data.customers.map((c) => (
+                    <tr key={c.customer} className="border-b border-line/60">
+                      <td className="py-1.5 text-ink">{c.customer_name}</td>
+                      <td className="py-1.5 text-right text-ink-2">{num(c.checks)}</td>
+                      <td className="py-1.5 text-right text-ink-2">{pkr(c.avg_invoice_value)}</td>
+                      <td className="py-1.5 text-right font-medium text-ink">{pkr(c.total)}</td>
+                      <td className="py-1.5 text-right text-ink-2">{fmtDate(c.last_invoice)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {hiddenCount > 0 && (
+        <div className="lg:col-span-2 -mt-1 text-[11px] text-ink-3">
+          <button onClick={() => setMore((m) => !m)} className="underline decoration-dotted underline-offset-2 hover:text-ink">
+            {more ? "Hide" : "Show"} {[singleOutlet && "outlets", singleMode && "payment modes", singleCustomer && "customers"].filter(Boolean).join(", ")}
+          </button>
+          {!more && <span> · only one value each on this data (one outlet, cash only, walk-in customer)</span>}
+        </div>
+      )}
     </>
   );
 }
@@ -409,27 +376,71 @@ export function SectionHeading({ title, hint, id }: { title: string; hint: strin
   );
 }
 
+const CMP_LABEL: Record<CompareMode, string> = { previous: "previous", last_week: "last week", last_year: "last year", custom: "" };
+
 export default function SalesTab({
-  range, refreshKey, onRetry, compareCommand, liveCommand,
-}: { range: Range; refreshKey: number; onRetry: () => void; compareCommand?: CompareCommand; liveCommand?: LiveCommand }) {
-  const kpis = useApi<SalesKpis>("/api/sales/kpis", range, refreshKey);
-  const pace = useApi<RunRate>("/api/sales/run-rate", range, refreshKey);
+  range, refreshKey, onRetry, compareCommand, liveCommand, onShowInvoices,
+}: { range: Range; refreshKey: number; onRetry: () => void; compareCommand?: CompareCommand; liveCommand?: LiveCommand; onShowInvoices?: () => void }) {
+  // Comparison basis shared by the KPI tiles, the comparison block and the product mix.
+  const [cmpMode, setCmpMode] = useState<CompareMode>(() => readStored<CompareMode>("sb-cmp-mode", "previous"));
+  const [cmpCustom, setCmpCustom] = useState<Range>(() => {
+    const stored = readStored<Range | null>("sb-cmp-range", null);
+    return stored && ISO_DATE.test(stored.start) && ISO_DATE.test(stored.end) && stored.start <= stored.end ? stored : defaultCustom(range);
+  });
+  const [seenCommand, setSeenCommand] = useState(compareCommand?.nonce);
+  if (compareCommand && compareCommand.nonce !== seenCommand) {
+    setSeenCommand(compareCommand.nonce);
+    setCmpMode(compareCommand.mode);
+    if (compareCommand.range) setCmpCustom(compareCommand.range);
+  }
+  const effectiveMode: CompareMode = cmpMode === "last_year" && lastYearUnavailable(range) ? "previous" : cmpMode;
+  useEffect(() => {
+    try {
+      localStorage.setItem("sb-cmp-mode", JSON.stringify(cmpMode));
+      localStorage.setItem("sb-cmp-range", JSON.stringify(cmpCustom));
+    } catch {
+      /* ignore */
+    }
+  }, [cmpMode, cmpCustom]);
+
+  // Monthly target typed by the owner, remembered per month in this browser.
+  const monthKey = range.end.slice(0, 7);
+  const [targets, setTargets] = useState<Record<string, number>>(() => readStored<Record<string, number>>("sb-targets", {}));
+  const target = targets[monthKey] ?? null;
+  const setTarget = (v: number | null) => {
+    const next = { ...targets };
+    if (v) next[monthKey] = v;
+    else delete next[monthKey];
+    setTargets(next);
+    try {
+      localStorage.setItem("sb-targets", JSON.stringify(next));
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const cmpExtra: Record<string, string | number> = effectiveMode === "custom" ? { mode: effectiveMode, cmp_start: cmpCustom.start, cmp_end: cmpCustom.end } : { mode: effectiveMode };
+  const kpis = useApi<SalesKpis>("/api/sales/kpis", range, refreshKey, cmpExtra);
+  const pace = useApi<RunRate>("/api/sales/run-rate", range, refreshKey, target ? { target } : {});
   const invoices = useApi<InvoicesResponse>("/api/sales/invoices", range, refreshKey);
+
   return (
     <div className="flex flex-col gap-4">
       <div id={sectionId("kpis")} className="scroll-mt-24">
-        <SalesKpiRow kpis={kpis} />
+        <SalesKpiRow kpis={kpis} cmpLabel={CMP_LABEL[effectiveMode]} />
       </div>
+      {kpis.data && <GuardrailLine health={kpis.data.health} onShowInvoices={onShowInvoices} />}
       <div id={sectionId("pace")} className="scroll-mt-4">
-        <SalesPaceRow pace={pace} />
+        <SalesPaceRow pace={pace} onTargetChange={setTarget} />
       </div>
-      {/* Live board keeps its own date (default today), independent of the range filter above */}
+      <MorningBrief refreshKey={refreshKey} target={target} />
       <LiveCompare refreshKey={refreshKey} onRetry={onRetry} command={liveCommand} />
+      <WeeklyRhythm refreshKey={refreshKey} />
       <SectionHeading id={sectionId("comparison")} title="Comparison" hint="how this range stacks up against another period" />
-      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} command={compareCommand} />
-      <SectionHeading title="Trends, Mix & Patterns" hint="what sells, when, and how it is paid for" />
+      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} mode={cmpMode} onModeChange={setCmpMode} custom={cmpCustom} onCustomChange={setCmpCustom} />
+      <SectionHeading title="Trends, Mix & Patterns" hint="what sells, how much, and how it moves month to month" />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <SalesCharts range={range} refreshKey={refreshKey} onRetry={onRetry} />
+        <SalesCharts range={range} refreshKey={refreshKey} onRetry={onRetry} cmpMode={effectiveMode} cmpCustom={cmpCustom} />
       </div>
       <div id={sectionId("invoices")} className="scroll-mt-4">
         <InvoicesTable state={invoices} range={range} onRetry={onRetry} />

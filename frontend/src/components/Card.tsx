@@ -9,7 +9,8 @@ export function SourceBadge({ source }: { source?: Source }) {
   const map: Record<Source, { label: string; tone: string }> = {
     sales_invoice: { label: "Sales Invoice", tone: "text-ink-3" },
     sales_invoice_item: { label: "Invoice Items", tone: "text-ink-3" },
-    pos_invoice: { label: "POS Invoice", tone: "text-ink-3" },
+    pos_invoice: { label: "POS bills", tone: "text-ink-3" },
+    pos_invoice_item: { label: "POS bill items", tone: "text-ink-3" },
   };
   const m = map[source] ?? { label: source, tone: "text-ink-3" };
   return (

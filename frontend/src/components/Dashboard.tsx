@@ -167,7 +167,7 @@ export default function Dashboard() {
     if (a.section) revealSection(a.section);
   };
 
-  const tabProps = { range, refreshKey, onRetry: refresh, compareCommand, liveCommand };
+  const tabProps = { range, refreshKey, onRetry: refresh, compareCommand, liveCommand, onShowInvoices: () => revealSection("invoices") };
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-4 px-4 py-4 sm:px-6">

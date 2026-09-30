@@ -5,20 +5,21 @@ import { useApi } from "@/hooks/useApi";
 import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { presetRange, toIso } from "@/lib/dates";
 import { fmtDate, fmtRange, fmtTime, num, pct, pkr } from "@/lib/format";
-import type { LiveCompare as LiveCompareData, LiveDelta, LiveMetric, LivePeriodKey, Range } from "@/lib/types";
+import type { LiveCompare as LiveCompareData, LiveCompareKey, LiveDelta, LiveMetric, LivePeriodKey, Range } from "@/lib/types";
 import { sectionId, type LiveCommand } from "@/lib/voice";
 import { AutoRefreshControl, LIVE_INTERVALS, parseIntervalEnv, RefreshCountdown, withDefault } from "./AutoRefreshControl";
 import { SourceBadge } from "./Card";
+import Spark from "./charts/Spark";
 import { EmptyState, ErrorState, Skeleton } from "./States";
 import MultiLineChart from "./charts/MultiLineChart";
 
 type LivePreset = "today" | "yesterday" | "custom";
 type ChartMetric = "sales" | "gcs";
 type Flash = "up" | "down";
-type CompareKey = "previous" | "last_week";
 
 const DEFAULT_INTERVAL = parseIntervalEnv(process.env.NEXT_PUBLIC_LIVE_REFRESH_SECONDS, 60);
 const INTERVAL_OPTIONS = withDefault(LIVE_INTERVALS, DEFAULT_INTERVAL);
+const COMPARE_KEYS: LiveCompareKey[] = ["previous", "last_week", "weekday_avg"];
 
 interface MetricDef {
   key: LiveMetric;
@@ -32,8 +33,8 @@ const signedNum = (v: number, decimals = 0) => `${v > 0 ? "+" : v < 0 ? "−" : 
 
 const METRICS: MetricDef[] = [
   { key: "sales", label: "Net Sales", hint: "PKR · returns deducted", fmt: (v) => pkr(v), fmtAbs: (v) => pkr(v, { sign: true }) },
-  { key: "gcs", label: "GCS", hint: "guest checks · bills rung up at the till", fmt: (v) => num(v), fmtAbs: (v) => signedNum(v) },
-  { key: "avg_check", label: "Average Check", hint: "net sales ÷ GCS", fmt: (v) => pkr(v), fmtAbs: (v) => pkr(v, { sign: true }) },
+  { key: "gcs", label: "Bills (GCS)", hint: "bills rung up at the till", fmt: (v) => num(v, v % 1 ? 1 : 0), fmtAbs: (v) => signedNum(v, v % 1 ? 1 : 0) },
+  { key: "avg_check", label: "Average Bill", hint: "net sales ÷ bills", fmt: (v) => pkr(v), fmtAbs: (v) => pkr(v, { sign: true }) },
   { key: "qty", label: "Qty Sold", hint: "units", fmt: (v) => num(v, 1), fmtAbs: (v) => signedNum(v, 1) },
 ];
 const TILES = METRICS.slice(0, 3);
@@ -75,12 +76,17 @@ function validRange(r: unknown): r is Range {
   return !!x && ISO_DATE.test(x.start) && ISO_DATE.test(x.end) && x.start <= x.end;
 }
 
-/** Wording for the two comparison periods, given what the board is showing. */
-function periodLabels(range: Range, days: number): Record<CompareKey, string> {
+/** Wording for the comparison periods, given what the board is showing. */
+function periodLabels(range: Range, days: number, weekday?: string | null, weeks?: number): Record<LiveCompareKey, string> {
+  const wd = weekday ? weekday.slice(0, 3) : "weekday";
   if (days === 1) {
-    return { previous: range.start === toIso(new Date()) ? "Yesterday" : "Previous day", last_week: "Same day last week" };
+    return {
+      previous: range.start === toIso(new Date()) ? "Yesterday" : "Previous day",
+      last_week: "Same day last week",
+      weekday_avg: `4-wk ${wd} avg${weeks ? ` (n=${weeks})` : ""}`,
+    };
   }
-  return { previous: `Previous ${days} days`, last_week: "Same period last week" };
+  return { previous: `Previous ${days} days`, last_week: "Same period last week", weekday_avg: "4-wk avg" };
 }
 
 function currentLabelFor(range: Range): string {
@@ -101,31 +107,10 @@ function DeltaBadge({ delta, invert }: { delta: LiveDelta; invert?: boolean }) {
   const tone = good ? "text-good bg-good/10" : bad ? "text-bad bg-bad/10" : "text-ink-3 bg-surface-2";
   const arrow = dir === "up" ? "▲" : dir === "down" ? "▼" : dir === "flat" ? "▶" : "·";
   return (
-    <span className={`tnum inline-flex min-w-[68px] items-center justify-end gap-1 rounded-md px-1.5 py-0.5 text-xs font-semibold ${tone}`} title={has ? "change vs that period" : "no sales in that period, so no percentage"}>
+    <span className={`tnum inline-flex min-w-[68px] items-center justify-end gap-1 rounded-md px-1.5 py-0.5 text-xs font-semibold ${tone}`} title={has ? "change vs that period" : "nothing to compare against for that period"}>
       <span aria-hidden="true" className="text-[9px]">{arrow}</span>
       {has ? pct(p) : "n/a"}
     </span>
-  );
-}
-
-/** Two cumulative curves on one tiny scale: this period (solid) against a comparison (dashed). */
-function Spark({ series }: { series: { values: (number | null)[]; color: string; dashed?: boolean }[] }) {
-  const w = 96;
-  const h = 30;
-  const all = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
-  if (all.length < 2) return <div style={{ width: w, height: h }} />;
-  const max = Math.max(...all);
-  const min = Math.min(0, ...all);
-  const n = Math.max(...series.map((s) => s.values.length));
-  const x = (i: number) => (n > 1 ? (i / (n - 1)) * (w - 2) + 1 : w / 2);
-  const y = (v: number) => (max === min ? h / 2 : h - 2 - ((v - min) / (max - min)) * (h - 4));
-  return (
-    <svg width={w} height={h} aria-hidden="true" className="shrink-0">
-      {series.map((s, si) => {
-        const pts = s.values.map((v, i) => (v === null ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`)).filter(Boolean).join(" ");
-        return pts ? <polyline key={si} points={pts} fill="none" stroke={s.color} strokeWidth={si === 0 ? 1.8 : 1.2} strokeDasharray={s.dashed ? "3 2" : undefined} strokeLinejoin="round" strokeLinecap="round" /> : null;
-      })}
-    </svg>
   );
 }
 
@@ -136,7 +121,7 @@ function CompareLine({ label, value, delta, def }: { label: string; value: numbe
         vs {label} <span className="tnum text-ink-2">{def.fmt(value)}</span>
       </span>
       <span className="flex shrink-0 items-center gap-2">
-        <span className="tnum text-ink-2">{def.fmtAbs(delta.abs)}</span>
+        <span className="tnum text-ink-2">{delta.abs !== null ? def.fmtAbs(delta.abs) : ""}</span>
         <DeltaBadge delta={delta} />
       </span>
     </div>
@@ -152,10 +137,11 @@ interface Props {
 }
 
 /**
- * Trading-style live board: the selected day (default today) against yesterday and
- * against the same weekday last week, for net sales, GCS (guest checks) and average
- * check. Figures come from POS Invoice, so today's checks appear as soon as they are
- * rung up. Polls ERPNext on a configurable interval; Refresh fetches immediately.
+ * Trading-style live board: the selected day (default today) against yesterday, against the
+ * same weekday last week and against the average of that weekday over the previous four
+ * weeks, for net sales, bills (GCS) and average bill. Figures come from POS Invoice, so
+ * today's bills appear as soon as they are keyed in. Polls ERPNext on a configurable
+ * interval; Refresh fetches immediately.
  */
 export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
   const [preset, setPreset] = useState<LivePreset>(() => {
@@ -233,11 +219,22 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
     setTick((t) => t + 1);
     restart();
   };
+  const showDay = (day: string) => {
+    const r = { start: day, end: day };
+    const p = livePresetFor(r);
+    setPreset(p);
+    if (p === "custom") {
+      setCustom(r);
+      setDraft(r);
+    }
+  };
 
-  const labels = periodLabels(range, data?.days ?? (range.start === range.end ? 1 : 2));
+  const wa = data?.periods.weekday_avg;
+  const labels = periodLabels(range, data?.days ?? (range.start === range.end ? 1 : 2), wa?.weekday, wa?.trading_weeks);
   const currentLabel = currentLabelFor(range);
   const invalidDraft = !validRange(draft);
   const noSalesYet = !!data && data.periods.current.totals.gcs === 0 && data.periods.current.totals.return_count === 0;
+  const hasBaseline = !!wa && (wa.trading_weeks ?? 0) >= 1;
 
   const chartRows = useMemo(() => {
     if (!data) return [];
@@ -248,16 +245,24 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
       current: pick("current", pt),
       previous: pick("previous", pt),
       last_week: pick("last_week", pt),
+      weekday_avg: pick("weekday_avg", pt),
     }));
   }, [data, chartMetric]);
   const chartSeries = [
     { key: "current", name: currentLabel, color: "var(--series-1)" },
     { key: "previous", name: labels.previous, color: "var(--ink-3)", dashed: true },
     { key: "last_week", name: labels.last_week, color: "var(--series-2)", dashed: true },
+    ...(hasBaseline ? [{ key: "weekday_avg", name: labels.weekday_avg, color: "var(--series-3)", dashed: true }] : []),
   ];
-  const chartFmt = chartMetric === "sales" ? (v: number) => pkr(v) : (v: number) => `${num(v)} checks`;
+  const chartFmt = chartMetric === "sales" ? (v: number) => pkr(v) : (v: number) => `${num(v, v % 1 ? 1 : 0)} bills`;
 
   const th = "py-1.5 font-medium";
+  const periodCols: { key: LivePeriodKey; label: string }[] = [
+    { key: "current", label: currentLabel },
+    { key: "previous", label: labels.previous },
+    { key: "last_week", label: labels.last_week },
+    ...(hasBaseline ? [{ key: "weekday_avg" as LivePeriodKey, label: labels.weekday_avg }] : []),
+  ];
 
   return (
     <section id={sectionId("live")} className="card scroll-mt-4 p-4 sm:p-5">
@@ -268,7 +273,7 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
             Today vs Yesterday vs Last Week Same Day Analysis
           </h2>
           <p className="mt-0.5 text-xs text-ink-3">
-            {currentLabel} vs {labels.previous.toLowerCase()} and {labels.last_week.toLowerCase()} · net sales, GCS and average check from POS checks
+            {currentLabel} vs {labels.previous.toLowerCase()}, {labels.last_week.toLowerCase()}{hasBaseline ? ` and the ${labels.weekday_avg}` : ""} · net sales, bills and average bill from POS bills
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -317,13 +322,13 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
               setIntervalSec(v);
               restart();
             }}
-            title="Poll ERPNext for new checks on this interval (paused while the tab is hidden)"
+            title="Poll ERPNext for new bills on this interval (paused while the tab is hidden)"
           />
           <button
             onClick={refreshNow}
             disabled={live.loading || live.refreshing}
             className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink hover:bg-surface-2 disabled:opacity-50"
-            title="Fetch the latest checks from ERPNext now"
+            title="Fetch the latest bills from ERPNext now"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={live.refreshing ? "animate-spin" : ""}>
               <path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" />
@@ -338,6 +343,7 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
           {live.fetchedAt ? `Updated ${fmtTime(live.fetchedAt)}` : "Loading…"}
           {live.refreshing ? " · refreshing…" : ""}
           {live.error && data ? ` · last refresh failed: ${live.error}` : ""}
+          {data?.day_close ? ` · pehla bill ${data.day_close.first_bill.slice(0, 5)} · aakhri ${data.day_close.last_bill.slice(0, 5)} (entry time)` : ""}
         </span>
         <span className="flex items-center gap-3">
           <RefreshCountdown nextAt={nextAt} intervalSec={intervalSec} />
@@ -356,9 +362,16 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
       ) : (
         <div className={`transition-opacity ${live.refreshing ? "opacity-70" : ""}`}>
           {noSalesYet && (
-            <div className="mb-3 rounded-md border border-warn/40 bg-surface-2 px-3 py-2 text-xs text-ink-2">
-              <span className="font-medium text-warn">No checks recorded for {currentLabel.toLowerCase()} yet.</span>
-              {data.last_trading_day ? ` Last sale on ${fmtDate(data.last_trading_day)}.` : ""} The comparison periods are shown for reference.
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-surface-2 px-3 py-2 text-xs text-ink-2">
+              <span>
+                <span className="font-medium text-warn">No bills keyed in for {currentLabel.toLowerCase()} yet.</span>
+                {data.last_trading_day ? ` Last bills on ${fmtDate(data.last_trading_day)}.` : ""} The comparison periods are shown for reference.
+              </span>
+              {data.last_trading_day && data.last_trading_day !== range.start && (
+                <button onClick={() => showDay(data.last_trading_day!)} className="rounded-md border border-line bg-surface px-2 py-0.5 text-[11px] font-medium text-ink hover:bg-surface-2">
+                  Show {fmtDate(data.last_trading_day)}
+                </button>
+              )}
             </div>
           )}
 
@@ -387,8 +400,9 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
                     )}
                   </div>
                   <div className="mt-3 flex flex-col gap-1.5 border-t border-line/60 pt-2">
-                    <CompareLine label={labels.previous} value={data.periods.previous.totals[m.key]} delta={data.deltas.previous[m.key]} def={m} />
-                    <CompareLine label={labels.last_week} value={data.periods.last_week.totals[m.key]} delta={data.deltas.last_week[m.key]} def={m} />
+                    {COMPARE_KEYS.filter((k) => k !== "weekday_avg" || hasBaseline).map((k) => (
+                      <CompareLine key={k} label={labels[k]} value={data.periods[k].totals[m.key]} delta={data.deltas[k][m.key]} def={m} />
+                    ))}
                   </div>
                 </div>
               );
@@ -399,12 +413,12 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
             <div className="flex flex-col gap-2 lg:col-span-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-ink-3">
-                  {data.granularity === "hour" ? "Running total through the day" : "Running total day by day"} · {fmtRange(range.start, range.end)}
+                  {data.granularity === "hour" ? "Running total by entry hour" : "Running total day by day"} · {fmtRange(range.start, range.end)}
                 </span>
                 <div role="tablist" aria-label="Chart metric" className="flex rounded-md border border-line bg-surface p-0.5">
                   {(["sales", "gcs"] as ChartMetric[]).map((k) => (
                     <button key={k} role="tab" aria-selected={chartMetric === k} onClick={() => setChartMetric(k)} className={`rounded px-2 py-0.5 text-[11px] font-medium ${chartMetric === k ? "bg-accent-soft text-accent" : "text-ink-2 hover:bg-surface-2"}`}>
-                      {k === "sales" ? "Sales" : "GCS"}
+                      {k === "sales" ? "Sales" : "Bills"}
                     </button>
                   ))}
                 </div>
@@ -416,47 +430,47 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
                   height={220}
                   format={chartFmt}
                   labelFormat={(l, e) => {
-                    const d = (e?.payload as { dates?: Record<LivePeriodKey, string> } | undefined)?.dates;
-                    return data.granularity === "hour" ? `${l}` : `${l} · ${fmtDate(d?.current)} vs ${fmtDate(d?.previous)} / ${fmtDate(d?.last_week)}`;
+                    const d = (e?.payload as { dates?: Partial<Record<LivePeriodKey, string>> } | undefined)?.dates;
+                    return data.granularity === "hour" ? `${l} (entry time)` : `${l} · ${fmtDate(d?.current)} vs ${fmtDate(d?.previous)} / ${fmtDate(d?.last_week)}`;
                   }}
                 />
               ) : (
-                <EmptyState title="No checks in any of the three periods" />
+                <EmptyState title="No bills in any of the periods" />
               )}
+              {data.granularity === "hour" && <p className="text-[11px] text-ink-3">Hours are when bills were keyed into ERPNext (entered in batches), not when customers paid.</p>}
             </div>
 
             <table className="w-full self-start text-xs lg:col-span-2">
               <thead>
                 <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-3">
                   <th className={th}>Metric</th>
-                  <th className={`${th} text-right`}>{currentLabel}</th>
-                  <th className={`${th} text-right`}>{labels.previous}</th>
-                  <th className={`${th} text-right`}>Δ</th>
-                  <th className={`${th} text-right`}>{labels.last_week}</th>
-                  <th className={`${th} text-right`}>Δ</th>
+                  {periodCols.map((c) => (
+                    <th key={c.key} className={`${th} text-right`}>{c.label}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody className="tnum">
                 {METRICS.map((m) => (
                   <tr key={m.key} className="border-b border-line/60">
                     <td className="py-1.5 text-ink-2">{m.label}</td>
-                    <td className="py-1.5 text-right font-medium text-ink">{m.fmt(data.periods.current.totals[m.key])}</td>
-                    <td className="py-1.5 text-right text-ink-2">{m.fmt(data.periods.previous.totals[m.key])}</td>
-                    <td className="py-1.5 text-right">
-                      <DeltaBadge delta={data.deltas.previous[m.key]} />
-                    </td>
-                    <td className="py-1.5 text-right text-ink-2">{m.fmt(data.periods.last_week.totals[m.key])}</td>
-                    <td className="py-1.5 text-right">
-                      <DeltaBadge delta={data.deltas.last_week[m.key]} />
-                    </td>
+                    {periodCols.map((c) => (
+                      <td key={c.key} className={`py-1.5 text-right ${c.key === "current" ? "font-medium text-ink" : "text-ink-2"}`}>
+                        {m.fmt(data.periods[c.key].totals[m.key])}
+                        {c.key !== "current" && (
+                          <div>
+                            <DeltaBadge delta={data.deltas[c.key as LiveCompareKey][m.key]} />
+                          </div>
+                        )}
+                      </td>
+                    ))}
                   </tr>
                 ))}
                 {(data.periods.current.totals.return_count > 0 || data.periods.previous.totals.return_count > 0 || data.periods.last_week.totals.return_count > 0) && (
                   <tr className="border-b border-line/60">
                     <td className="py-1.5 text-ink-2">Returns</td>
-                    {(["current", "previous", "last_week"] as LivePeriodKey[]).map((p, i) => (
-                      <td key={p} className={`py-1.5 text-right text-ink-2 ${i > 0 ? "" : ""}`} colSpan={i === 0 ? 1 : 2}>
-                        {pkr(data.periods[p].totals.returns_total)} · {num(data.periods[p].totals.return_count)}
+                    {periodCols.map((c) => (
+                      <td key={c.key} className="py-1.5 text-right text-ink-2">
+                        {pkr(data.periods[c.key].totals.returns_total)} · {num(data.periods[c.key].totals.return_count)}
                       </td>
                     ))}
                   </tr>
@@ -464,8 +478,9 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
               </tbody>
               <tfoot>
                 <tr>
-                  <td colSpan={6} className="pt-2 text-[11px] text-ink-3">
-                    {currentLabel}: {fmtRange(data.periods.current.range.start, data.periods.current.range.end)} · {labels.previous}: {fmtRange(data.periods.previous.range.start, data.periods.previous.range.end)} · {labels.last_week}: {fmtRange(data.periods.last_week.range.start, data.periods.last_week.range.end)}
+                  <td colSpan={periodCols.length + 1} className="pt-2 text-[11px] text-ink-3">
+                    {currentLabel}: {fmtRange(data.periods.current.range!.start, data.periods.current.range!.end)} · {labels.previous}: {fmtRange(data.periods.previous.range!.start, data.periods.previous.range!.end)} · {labels.last_week}: {fmtRange(data.periods.last_week.range!.start, data.periods.last_week.range!.end)}
+                    {hasBaseline && wa?.dates?.length ? ` · ${labels.weekday_avg}: ${wa.dates.map((d) => fmtDate(d).slice(0, 6)).join(", ")}` : ""}
                   </td>
                 </tr>
               </tfoot>

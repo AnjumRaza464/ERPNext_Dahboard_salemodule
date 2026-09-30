@@ -1,8 +1,21 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, Query
+
+# The bakery's clock. Vercel functions run in UTC, which is a day behind Pakistan between
+# midnight and 05:00 PKT, so "today" must be computed in the local zone.
+LOCAL_TZ = ZoneInfo("Asia/Karachi")
+
+
+def now_local() -> datetime:
+    return datetime.now(LOCAL_TZ)
+
+
+def today_local() -> date:
+    return now_local().date()
 
 
 class DateRange:
@@ -21,6 +34,9 @@ class DateRange:
         prev_end = self.start - timedelta(days=1)
         return DateRange(prev_end - timedelta(days=self.days - 1), prev_end)
 
+    def shift(self, days: int) -> "DateRange":
+        return DateRange(self.start + timedelta(days=days), self.end + timedelta(days=days))
+
     @property
     def granularity(self) -> str:
         return "day" if self.days <= 92 else "month"
@@ -33,8 +49,8 @@ class DateRange:
 
 
 def date_range(
-    start: date | None = Query(default=None, description="YYYY-MM-DD; default = 1st of current month"),
-    end: date | None = Query(default=None, description="YYYY-MM-DD; default = today"),
+    start: date | None = Query(default=None, description="YYYY-MM-DD; default = 1st of current month (Asia/Karachi)"),
+    end: date | None = Query(default=None, description="YYYY-MM-DD; default = today (Asia/Karachi)"),
 ) -> DateRange:
-    today = date.today()
+    today = today_local()
     return DateRange(start or today.replace(day=1), end or today)

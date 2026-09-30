@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from ..cache import cached
 from ..config import get_settings
-from ..dates import DateRange
+from ..dates import DateRange, today_local
 from ..erpnext_client import ERPNextError
 from ..services import live, sales
 
@@ -36,29 +36,27 @@ SECTIONS: dict[str, str] = {
              "GCS (guest checks / number of bills / kitne bill) and average check (average bill / per bill sale). "
              "Use for 'aaj vs kal', 'today vs yesterday', 'pichle hafte isi din se', 'live', 'GCS', 'average check'"),
     "kpis": "headline KPI tiles: total sales, invoice count, avg invoice, qty, outstanding (top of page)",
-    "pace": "daily pace: avg per day, best day, lowest day, projected month-end",
+    "pace": "daily pace and monthly target: avg per day, best day, lowest day, projected month-end, target attainment (target ka kitna hua)",
+    "weekly": "weekly rhythm table: this week day by day vs last week vs 4-week same-weekday average (is hafte, hafte ka pattern, pichle hafte se)",
+    "pmix": "product mix table: every item by qty / value with change vs the comparison period, new / declining items, and 'kal ka plan' (tomorrow's typical quantities per item)",
+    "brief": "morning brief: a few Roman Urdu lines summarising the last trading day, month pace and tomorrow's plan (subah ka summary, aaj ka brief)",
     "comparison": "comparison block: this range vs previous period / last year / custom period",
     "monthly": ("monthly sales history for last 12 months, month-on-month growth. Also the target for any 'trend' request "
                 "('sales trend', 'trend batao', 'rujhan', 'sale kaisi ja rahi hai')"),
     "item_groups": "sales by item group / category (donut)",
     "payment_modes": "payment modes: cash, card, credit",
     "top_items": "top selling items / products",
-    "pareto": "item concentration, Pareto / ABC analysis",
     "outlets": "outlet-wise / branch-wise sales",
-    "composition": "sales composition waterfall: gross, discounts, taxes, returns, net",
-    "heatmap": "weekday x hour heatmap",
-    "by_hour": "sales by hour of day, peak hour (kis ghante / kis waqt / kis time sab se zyada sale)",
-    "by_weekday": "sales by weekday, best weekday (kis din sab se zyada sale)",
     "customers": "top customers",
     "invoices": "invoice list / table of all invoices",
 }
-COMPARE_MODES = ("previous", "last_year", "custom")
-MODE_NAMES = {"previous": "pichle period", "last_year": "pichle saal", "custom": "doosre period"}
+COMPARE_MODES = ("previous", "last_week", "last_year", "custom")
+MODE_NAMES = {"previous": "pichle period", "last_week": "pichle hafte ke wahi din", "last_year": "pichle saal", "custom": "doosre period"}
 
 TRANSCRIBE_HINT = (
     "Sindh Bakery sales dashboard. The speaker mixes Urdu, Hindi and English, e.g. "
     "yesterday sale, aaj ki sale, kal ki sale, parson, is hafte, is mahine, pichle mahine, "
-    "comparison, last year, top items, customers, invoices, heatmap, refresh, dark mode, "
+    "comparison, last year, top items, customers, invoices, refresh, dark mode, "
     "live comparison, aaj vs kal, GCS, average check, pichle hafte."
 )
 
@@ -116,6 +114,12 @@ def _examples(today: date) -> str:
         ("top items dikhao", {"section": "top_items"}),
         ("sales trend dikhao", {"section": "monthly"}),
         ("trend batao", {"section": "monthly"}),
+        ("is hafte ka pattern batao", {"section": "weekly"}),
+        ("kal ka plan", {"section": "pmix"}),
+        ("sab se zyada bikne wali items", {"section": "pmix"}),
+        ("target ka kitna hua", {"section": "pace"}),
+        ("subah ka brief sunao", {"section": "brief"}),
+        ("pichle hafte ke wahi dinon se compare karo", {"section": "comparison", "compare_mode": "last_week"}),
         ("aaj ki sale kal se compare karo", {"start": t, "end": t, "section": "live"}),
         ("live comparison", {"section": "live"}),
         ("GCS aur average check batao", {"section": "live"}),
@@ -147,8 +151,9 @@ Live board: a day against the day before / the same day last week, or GCS / aver
 section "live" (start = end = the day named, e.g. today or yesterday; null if none named). It always shows both
 "vs yesterday" and "vs same day last week", so do not set compare_mode for it.
 Comparison: "comparison" / "muqabla" / "compare" with any other period -> section "comparison".
-"last year se" / "pichle saal" -> compare_mode "last_year"; "pichle period / pichle hafte se / pichle mahine se" when that equals the
-previous same-length window -> "previous"; two explicit periods -> range = the FIRST period, compare_mode "custom",
+"last year se" / "pichle saal" -> compare_mode "last_year"; "pichle hafte ke wahi din se" / "same days last week" -> compare_mode
+"last_week"; "pichle period / pichle mahine se" when that equals the previous same-length window -> "previous";
+two explicit periods -> range = the FIRST period, compare_mode "custom",
 compare_start/compare_end = the SECOND period. Example: "kal aur parson ka comparison" -> start = end = yesterday,
 compare_start = compare_end = day before yesterday. Otherwise compare_mode null (keep the current one).
 
@@ -307,6 +312,7 @@ async def _live_summary(rng: DateRange, today: date) -> str:
 
 async def _summary(rng: DateRange, section: str | None, cmp_mode: str, cmp_rng: DateRange | None) -> str:
     """One spoken line with the live figure the user most likely wants."""
+    today = today_local()
     try:
         if section == "comparison":
             cs, ce = (cmp_rng.start, cmp_rng.end) if cmp_mode == "custom" and cmp_rng else (None, None)
@@ -320,14 +326,45 @@ async def _summary(rng: DateRange, section: str | None, cmp_mode: str, cmp_rng: 
             if d is not None:
                 line += f" Yani {abs(d):.1f} percent {'zyada' if d >= 0 else 'kam'}."
             return line
-        k, _ = await cached(f"sales:kpis:{rng.key()}", lambda: sales.kpis(rng))
+        if section == "weekly":
+            w, _ = await cached(f"sales:weekly:{today.isoformat()}", lambda: sales.weekly(today))
+            wt = w["wtd"]
+            if not wt["checks"]:
+                return "Is hafte abhi tak koi bill nahi."
+            line = f"Is hafte ab tak {_rs(wt['net_sales'])}, {wt['checks']} bill, {_change(wt['vs_last_week_pct'])} pichle hafte ke wahi dinon se."
+            if w["best_day"]:
+                line += f" Sab se acha din {w['best_day']['weekday']}, {_rs(w['best_day']['net_sales'])}."
+            return line
+        if section == "pace":
+            r, _ = await cached(f"sales:runrate:{rng.key()}:", lambda: sales.run_rate(rng))
+            m = r["month"]
+            line = f"{m['label']} mein ab tak {_rs(m['mtd'])}, {m['active_days']} trading din, projected {_rs(m['projected'])}."
+            if m["target"]:
+                t = m["target"]
+                line += f" Target ka {t['attainment_pct']:.0f} percent."
+                if t["required_per_trading_day"]:
+                    line += f" Rozana {_rs(t['required_per_trading_day'])} chahiye, {m['remaining_trading_days']} trading din baqi."
+            return line
+        if section == "pmix":
+            v, _ = await cached("sales:velocity:4:30:" + today.isoformat(), lambda: sales.item_velocity(4, 30, today))
+            if not v["items"]:
+                return ""
+            tops = ", ".join(f"{i['item_name']} {i['typical_qty']:.0f}" for i in v["items"][:5])
+            return f"Kal {v['next_day']['weekday']} ka plan, typical qty: {tops}."
+        if section == "brief":
+            b, _ = await cached(f"sales:brief:last::{today.isoformat()}", lambda: sales.brief(None, None))
+            return b["text"]
+        k, _ = await cached(f"sales:kpis:{rng.key()}:{cmp_mode}::", lambda: sales.kpis(rng, cmp_mode))
         cur = k["current"]
-        if not cur["invoice_count"]:
-            return "Is period mein abhi tak koi sale record nahi hui."
-        line = f"Total sale {_rs(cur['total_sales'])}, {cur['invoice_count']} invoices."
-        d = k["delta_pct"].get("total_sales")
+        if not cur["checks"]:
+            return "Is period mein abhi tak koi bill nahi."
+        line = f"Net sale {_rs(cur['net_sales'])}, {cur['checks']} bill, avg bill {_rs(cur['avg_check'])}."
+        d = k["delta_pct"].get("net_sales")
         if d is not None:
-            line += f" {'Pichle din' if rng.days == 1 else 'Pichle period'} se {abs(d):.1f} percent {'zyada' if d >= 0 else 'kam'}."
+            line += f" {MODE_NAMES.get(cmp_mode, 'pichle period').capitalize()} se {abs(d):.1f} percent {'zyada' if d >= 0 else 'kam'}."
+        h = k.get("health") or {}
+        if h.get("draft_bills"):
+            line += f" Note: {h['draft_bills']} draft bill pending."
         return line
     except (ERPNextError, KeyError, TypeError) as exc:
         log.warning("voice summary failed: %s", exc)
@@ -337,10 +374,10 @@ async def _summary(rng: DateRange, section: str | None, cmp_mode: str, cmp_rng: 
 async def _handle(text: str, today_s: str | None, start: date | None, end: date | None,
                   cmp_mode: str, cmp_start: date | None, cmp_end: date | None,
                   live_start: date | None = None, live_end: date | None = None) -> dict[str, Any]:
-    today = _parse_day(today_s) or date.today()
-    # the browser's local date may be a day off the server's (UTC on Vercel); trust it within a day
-    if abs((today - date.today()).days) > 1:
-        today = date.today()
+    today = _parse_day(today_s) or today_local()
+    # the browser's local date may be a day off the server's; trust it within a day
+    if abs((today - today_local()).days) > 1:
+        today = today_local()
     current = DateRange(start or today.replace(day=1), end or today)
     live_rng = DateRange(live_start, live_end) if live_start and live_end and live_start <= live_end else DateRange(today, today)
     cmp_mode = cmp_mode if cmp_mode in COMPARE_MODES else "previous"
@@ -387,7 +424,7 @@ async def _handle(text: str, today_s: str | None, start: date | None, end: date 
             summary = await _live_summary(live_rng, today)
         except (ERPNextError, KeyError, TypeError) as exc:
             log.warning("voice live summary failed: %s", exc)
-    elif understood and (new_rng or section in ("kpis", "comparison") or actions.get("refresh")):
+    elif understood and (new_rng or section in ("kpis", "comparison", "weekly", "pace", "pmix", "brief") or actions.get("refresh")):
         summary = await _summary(new_rng or current, section, cmp_mode, cmp_rng)
     return {
         "transcript": text,

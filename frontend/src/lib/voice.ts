@@ -4,8 +4,8 @@ import type { CompareMode, Range } from "./types";
 
 /** Dashboard sections the voice assistant can scroll to (ids match backend/app/routers/voice.py). */
 export type VoiceSection =
-  | "live" | "kpis" | "pace" | "comparison" | "monthly" | "item_groups" | "payment_modes" | "top_items" | "pareto"
-  | "outlets" | "composition" | "heatmap" | "by_hour" | "by_weekday" | "customers" | "invoices";
+  | "live" | "kpis" | "pace" | "brief" | "weekly" | "comparison" | "monthly" | "pmix" | "item_groups" | "payment_modes" | "top_items"
+  | "outlets" | "customers" | "invoices";
 
 export const sectionId = (s: VoiceSection) => `sec-${s}`;
 

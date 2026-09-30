@@ -1,4 +1,4 @@
-export type Source = "sales_invoice" | "sales_invoice_item" | "pos_invoice";
+export type Source = "sales_invoice" | "sales_invoice_item" | "pos_invoice" | "pos_invoice_item";
 
 export interface Range {
   start: string;
@@ -11,22 +11,53 @@ interface Base {
   cached?: boolean;
 }
 
+export type CompareMode = "previous" | "last_week" | "last_year" | "custom";
+
+/** Period totals on bills (POS Invoice). `invoice_count` / `avg_invoice_value` are aliases kept for older callers. */
 export interface SalesTotals {
+  net_sales: number;
   total_sales: number;
   gross_sales: number;
+  discounts: number;
   returns_total: number;
-  invoice_count: number;
   return_count: number;
+  /** bills (guest checks) */
+  checks: number;
+  invoice_count: number;
+  /** net sales / bills, excluding bulk-entry days */
+  avg_check: number;
   avg_invoice_value: number;
-  outstanding: number;
   total_qty: number;
+  items_per_check: number;
+  avg_qty_per_invoice: number;
+  active_days: number;
+  checks_per_trading_day: number;
+  avg_per_day: number;
+  excluded_days: string[];
+}
+
+export interface DataHealth {
+  last_bill_date: string | null;
+  last_bill_time: string | null;
+  days_without_entry: number | null;
+  draft_bills: number;
+  unconsolidated_bills: number;
+  cancelled_bills: number;
+  cancelled_total: number;
+  calendar_days: number;
+  trading_days: number;
+  returns: { count: number; amount: number; pct_of_gross: number };
+  discounts: { amount: number; pct_of_gross: number };
 }
 
 export interface SalesKpis extends Base {
+  mode: CompareMode;
   previous_range: Range;
   current: SalesTotals;
   previous: SalesTotals;
-  delta_pct: Record<keyof SalesTotals, number | null>;
+  delta_pct: Partial<Record<keyof SalesTotals, number | null>>;
+  health: DataHealth;
+  excluded_days: string[];
 }
 
 export interface Invoice {
@@ -54,12 +85,14 @@ export interface Invoice {
 export interface InvoicesResponse extends Base {
   count: number;
   invoices: Invoice[];
+  note?: string;
 }
 
 export interface TrendPoint {
   period: string;
   total: number;
   invoice_count: number;
+  checks: number;
 }
 
 export interface SalesTrend extends Base {
@@ -89,6 +122,7 @@ export interface Outlet {
   pos_profile: string | null;
   total: number;
   invoice_count: number;
+  checks: number;
   avg_invoice_value: number;
   outstanding: number;
   share_pct: number;
@@ -99,9 +133,7 @@ export interface OutletSales extends Base {
   total: number;
 }
 
-// ---------------------------------------------------------------- sales analytics
-
-export type CompareMode = "previous" | "last_year" | "custom";
+// ---------------------------------------------------------------- comparison
 
 export interface ComparePoint {
   index: number;
@@ -115,10 +147,15 @@ export interface ComparePoint {
   previous_cum: number | null;
 }
 
-export interface CompareTotals extends SalesTotals {
-  active_days: number;
-  avg_per_day: number;
-  avg_qty_per_invoice: number;
+export type CompareTotals = SalesTotals;
+
+/** How the change in sales splits into more/fewer bills (traffic) and bigger/smaller bills (spend). */
+export interface Attribution {
+  delta_sales: number;
+  traffic_effect: number;
+  spend_effect: number;
+  traffic_pct: number | null;
+  spend_pct: number | null;
 }
 
 export interface SalesCompare extends Base {
@@ -133,6 +170,7 @@ export interface SalesCompare extends Base {
   current: CompareTotals;
   previous: CompareTotals;
   kpi_delta_pct: Partial<Record<keyof CompareTotals, number | null>>;
+  attribution: Attribution | null;
 }
 
 export interface CompareRow {
@@ -163,6 +201,8 @@ export interface CompareWeekdayRow {
   previous: number;
   current_total: number;
   previous_total: number;
+  current_n: number;
+  previous_n: number;
   delta_pct: number | null;
 }
 
@@ -171,25 +211,37 @@ export interface CompareBreakdown extends Base {
   mode: CompareMode;
   item_groups: CompareGroupRow[];
   top_items: CompareItemRow[];
+  /** slowest sellers of this period (items that did sell, smallest value first) */
+  bottom_items: CompareItemRow[];
   gainers: CompareItemRow[];
   losers: CompareItemRow[];
   weekdays: CompareWeekdayRow[];
   new_items: number;
+  /** items sold in the comparison period but not at all in this one */
+  dropped_items: number;
 }
+
+// ---------------------------------------------------------------- history, pace, target
 
 export interface MonthPoint {
   period: string;
   label: string;
   total: number;
   invoice_count: number;
+  checks: number;
   qty: number;
   avg_invoice_value: number;
+  avg_check: number;
+  items_per_check: number;
   active_days: number;
   avg_per_day: number;
+  avg_per_trading_day: number;
   mom_pct: number | null;
   last_year: number;
   yoy_pct: number | null;
   is_partial: boolean;
+  /** bulk / opening-entry days inside the month (left out of averages) */
+  excluded_days: string[];
 }
 
 export interface MonthlySales extends Base {
@@ -200,57 +252,22 @@ export interface MonthlySales extends Base {
   total: number;
 }
 
-export interface HeatmapCell {
-  weekday: string;
-  weekday_index: number;
-  hour: number;
-  total: number;
-  invoice_count: number;
-  occurrences: number;
-  avg_per_day: number;
-}
-
-export interface SalesHeatmap extends Base {
-  weekdays: string[];
-  cells: HeatmapCell[];
-  max_avg: number;
-  hour_min: number;
-  hour_max: number;
-  peak: { weekday: string; hour: number; avg_per_day: number } | null;
-}
-
-export interface ParetoItem {
-  rank: number;
-  item_code: string;
-  item_name: string;
-  item_group: string | null;
-  amount: number;
-  qty: number;
-  share_pct: number;
-  cum_share_pct: number;
-  cls: "A" | "B" | "C";
-}
-
-export interface ParetoClass {
-  cls: "A" | "B" | "C";
-  items: number;
-  amount: number;
-  share_pct: number;
-  items_pct: number;
-}
-
-export interface ItemPareto extends Base {
-  items: ParetoItem[];
-  classes: ParetoClass[];
-  distinct_items: number;
-  total_amount: number;
-  items_for_80_pct: number;
-}
-
 export interface DayFigure {
   date: string;
   total: number;
   invoice_count: number;
+  checks: number;
+}
+
+export type TargetStatus = "achieved" | "on_track" | "at_risk" | "behind";
+
+export interface MonthTarget {
+  amount: number;
+  source: "env" | "client" | null;
+  attainment_pct: number;
+  required_per_trading_day: number | null;
+  remaining_to_target: number;
+  status: TargetStatus;
 }
 
 export interface RunRate extends Base {
@@ -259,23 +276,149 @@ export interface RunRate extends Base {
   active_days: number;
   avg_per_day: number;
   avg_per_active_day: number;
+  avg_checks_per_active_day: number;
   best_day: DayFigure | null;
   worst_day: DayFigure | null;
+  excluded_days: string[];
   month: {
     start: string;
     end: string;
     label: string;
+    key: string;
     days_in_month: number;
     elapsed_days: number;
     remaining_days: number;
     active_days: number;
+    remaining_trading_days: number;
+    expected_trading_ratio: number;
     mtd: number;
     avg_per_day: number;
+    avg_per_trading_day: number;
     projected: number;
+    projection_basis: "active_day_pace" | "previous_month_pace";
     is_current: boolean;
     is_complete: boolean;
+    target: MonthTarget | null;
   };
 }
+
+// ---------------------------------------------------------------- weekly rhythm
+
+export interface WeekDayFigure {
+  date: string;
+  net_sales: number;
+  checks: number;
+  avg_check: number;
+  qty?: number;
+  excluded?: boolean;
+}
+
+export interface WeekAvg4 {
+  net_sales: number;
+  checks: number;
+  avg_check: number;
+  trading_weeks: number;
+}
+
+export interface WeekDay {
+  weekday: string;
+  date: string;
+  is_today: boolean;
+  is_future: boolean;
+  net_sales: number;
+  checks: number;
+  avg_check: number;
+  qty: number;
+  excluded: boolean;
+  share_of_week_pct: number;
+  last_week: WeekDayFigure | null;
+  avg4: WeekAvg4 | null;
+  delta_vs_last_week_pct: number | null;
+  delta_vs_avg4_pct: number | null;
+}
+
+export interface WeeklySales {
+  source: Source;
+  cached?: boolean;
+  week: { start: string; end: string; label: string; is_current: boolean; can_go_back: boolean; can_go_forward: boolean };
+  days: WeekDay[];
+  wtd: {
+    net_sales: number;
+    checks: number;
+    avg_check: number;
+    last_week_net_sales: number;
+    last_week_checks: number;
+    vs_last_week_pct: number | null;
+    avg4_net_sales: number;
+    vs_avg4_pct: number | null;
+    trading_days: number;
+  };
+  best_day: { weekday: string; date: string; net_sales: number } | null;
+  excluded_days: string[];
+}
+
+// ---------------------------------------------------------------- product mix
+
+export interface PmixItem {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  qty: number;
+  net_sales: number;
+  qty_share_pct: number;
+  sales_share_pct: number;
+  avg_price: number;
+  prev_qty: number;
+  prev_net_sales: number;
+  delta_qty_pct: number | null;
+  delta_sales_pct: number | null;
+  delta_sales_abs: number;
+  is_new: boolean;
+  is_dropped: boolean;
+  is_declining: boolean;
+}
+
+export interface Pmix extends Base {
+  previous_range: Range;
+  mode: CompareMode;
+  items: PmixItem[];
+  groups: { item_group: string; qty: number; net_sales: number; share_pct: number; items: number }[];
+  totals: { qty: number; net_sales: number; distinct_items: number; new_items: number; dropped_items: number; declining_items: number };
+  top5_share_pct: number;
+}
+
+export interface VelocityItem {
+  item_code: string;
+  item_name: string;
+  item_group: string | null;
+  total_qty: number;
+  /** units per trading day over the window */
+  typical_qty: number;
+  /** units on the same weekday as the next day, averaged (null when that weekday never traded) */
+  weekday_qty: number | null;
+  weekday_n: number;
+  days_sold: number;
+  last_4_days: number[];
+}
+
+export interface ItemVelocity extends Base {
+  next_day: { date: string; weekday: string };
+  trading_days: number;
+  last_4_dates: string[];
+  weekday_dates: string[];
+  items: VelocityItem[];
+  distinct_items: number;
+}
+
+export interface Brief {
+  source: Source;
+  cached?: boolean;
+  date: string;
+  lines: string[];
+  text: string;
+}
+
+// ---------------------------------------------------------------- legacy API-only payloads
 
 export interface ItemGroupRow {
   item_group: string;
@@ -290,51 +433,12 @@ export interface ItemGroupSales extends Base {
   total_amount: number;
 }
 
-export interface HourPoint {
-  hour: number;
-  label: string;
-  total: number;
-  invoice_count: number;
-  avg_per_day: number;
-}
-
-export interface HourlySales extends Base {
-  active_days: number;
-  points: HourPoint[];
-  peak_hour: number | null;
-}
-
-export interface WeekdayPoint {
-  weekday: string;
-  total: number;
-  invoice_count: number;
-  occurrences: number;
-  avg_per_day: number;
-}
-
-export interface WeekdaySales extends Base {
-  points: WeekdayPoint[];
-  best_weekday: string | null;
-}
-
-export interface DistributionBucket {
-  bucket: string;
-  min: number;
-  max: number | null;
-  invoice_count: number;
-  total: number;
-}
-
-export interface InvoiceDistribution extends Base {
-  buckets: DistributionBucket[];
-  stats: { count: number; median: number; mean: number; min: number; max: number; p90: number };
-}
-
 export interface CustomerRow {
   customer: string;
   customer_name: string;
   total: number;
   invoice_count: number;
+  checks: number;
   avg_invoice_value: number;
   outstanding: number;
   last_invoice: string;
@@ -359,62 +463,53 @@ export interface PaymentModes extends Base {
   total: number;
 }
 
-export interface WaterfallStep {
-  label: string;
-  amount: number;
-  kind: "total" | "delta";
-}
-
-export interface SalesComposition extends Base {
-  steps: WaterfallStep[];
-  gross: number;
-  discount: number;
-  taxes: number;
-  returns: number;
-  net_sales: number;
-  invoice_count: number;
-  return_count: number;
-  discount_pct: number;
-}
-
 // ---------------------------------------------------------------- live comparison board
 
 export type LiveMetric = "sales" | "gcs" | "avg_check" | "qty";
-export type LivePeriodKey = "current" | "previous" | "last_week";
+export type LivePeriodKey = "current" | "previous" | "last_week" | "weekday_avg";
+export type LiveCompareKey = "previous" | "last_week" | "weekday_avg";
 
 export interface LiveTotals {
   sales: number;
   gross_sales: number;
   returns_total: number;
-  /** guest checks: POS invoices rung up (returns excluded) */
+  discounts: number;
+  /** bills rung up (returns excluded) */
   gcs: number;
   return_count: number;
-  /** net sales / gcs */
+  /** net sales / bills */
   avg_check: number;
   qty: number;
+  trading_days: number;
 }
 
 export interface LivePeriod {
   key: LivePeriodKey;
-  range: Range;
+  range: Range | null;
   totals: LiveTotals;
+  /** weekday_avg only */
+  weekday?: string | null;
+  trading_weeks?: number;
+  dates?: string[];
 }
 
 export interface LiveDelta {
-  abs: number;
+  abs: number | null;
   pct: number | null;
 }
 
 export interface LivePoint {
   index: number;
   label: string;
-  dates: Record<LivePeriodKey, string>;
+  dates: Partial<Record<LivePeriodKey, string>>;
   current: number | null;
   previous: number | null;
   last_week: number | null;
+  weekday_avg: number | null;
   current_gcs: number | null;
   previous_gcs: number | null;
   last_week_gcs: number | null;
+  weekday_avg_gcs: number | null;
 }
 
 export interface LiveCompare extends Base {
@@ -422,7 +517,9 @@ export interface LiveCompare extends Base {
   days: number;
   granularity: "hour" | "day";
   periods: Record<LivePeriodKey, LivePeriod>;
-  deltas: Record<"previous" | "last_week", Record<LiveMetric, LiveDelta>>;
+  deltas: Record<LiveCompareKey, Record<LiveMetric, LiveDelta>>;
   points: LivePoint[];
   last_trading_day: string | null;
+  day_close: { first_bill: string; last_bill: string } | null;
+  note?: string;
 }
