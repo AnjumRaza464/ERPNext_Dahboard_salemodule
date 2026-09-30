@@ -21,6 +21,37 @@ class Settings(BaseSettings):
     live_cache_ttl_seconds: int = 15
     request_timeout_seconds: float = 60.0
 
+    # Days whose bills are opening / bulk stock entries rather than retail sales (single one-line
+    # bills of PKR 500k+). Their totals stay in every sum and table, but they are left out of
+    # derived statistics: best / lowest day, averages per bill or per day, weekday baselines.
+    exclude_dates_from_stats: str = "2026-04-16,2026-05-03,2026-05-05,2026-05-11,2026-06-02"
+    # Extra dates (closures, Eid) to leave out of the live board's 4-week same-weekday baseline.
+    live_exclude_dates: str = ""
+    # Monthly net-sales targets, e.g. "2026-10:4500000,default:4000000". The browser can override
+    # per month; nothing is stored in ERPNext.
+    monthly_targets: str = ""
+
+    @property
+    def excluded_dates(self) -> set[str]:
+        return {d.strip() for d in self.exclude_dates_from_stats.split(",") if d.strip()}
+
+    @property
+    def live_excluded_dates(self) -> set[str]:
+        return {d.strip() for d in self.live_exclude_dates.split(",") if d.strip()} | self.excluded_dates
+
+    def monthly_target(self, month_key: str) -> float | None:
+        """Target for 'YYYY-MM' from MONTHLY_TARGETS, falling back to the 'default' entry."""
+        table: dict[str, float] = {}
+        for part in self.monthly_targets.split(","):
+            if ":" in part:
+                k, v = part.split(":", 1)
+                try:
+                    table[k.strip()] = float(v.strip())
+                except ValueError:
+                    continue
+        value = table.get(month_key, table.get("default"))
+        return value if value and value > 0 else None
+
     # Voice assistant (OpenAI). Empty key disables /api/voice/* with a clear 503.
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
