@@ -22,7 +22,7 @@ from ..cache import cached
 from ..config import get_settings
 from ..dates import DateRange
 from ..erpnext_client import ERPNextError
-from ..services import sales
+from ..services import live, sales
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/voice", tags=["voice"])
@@ -32,11 +32,14 @@ MAX_AUDIO_BYTES = 4_000_000  # Vercel caps request bodies at 4.5 MB; ~30 s of we
 
 # Must match the section ids the frontend scrolls to (see frontend/src/lib/voice.ts).
 SECTIONS: dict[str, str] = {
+    "live": ("'Today vs Yesterday vs Last Week Same Day Analysis' board: today vs yesterday AND vs the same day last week for net sales, "
+             "GCS (guest checks / number of bills / kitne bill) and average check (average bill / per bill sale). "
+             "Use for 'aaj vs kal', 'today vs yesterday', 'pichle hafte isi din se', 'live', 'GCS', 'average check'"),
     "kpis": "headline KPI tiles: total sales, invoice count, avg invoice, qty, outstanding (top of page)",
     "pace": "daily pace: avg per day, best day, lowest day, projected month-end",
     "comparison": "comparison block: this range vs previous period / last year / custom period",
-    "trend": "sales trend chart over the range (daily or monthly)",
-    "monthly": "monthly sales history for last 12 months, month-on-month growth",
+    "monthly": ("monthly sales history for last 12 months, month-on-month growth. Also the target for any 'trend' request "
+                "('sales trend', 'trend batao', 'rujhan', 'sale kaisi ja rahi hai')"),
     "item_groups": "sales by item group / category (donut)",
     "payment_modes": "payment modes: cash, card, credit",
     "top_items": "top selling items / products",
@@ -46,7 +49,6 @@ SECTIONS: dict[str, str] = {
     "heatmap": "weekday x hour heatmap",
     "by_hour": "sales by hour of day, peak hour (kis ghante / kis waqt / kis time sab se zyada sale)",
     "by_weekday": "sales by weekday, best weekday (kis din sab se zyada sale)",
-    "distribution": "invoice value distribution / histogram",
     "customers": "top customers",
     "invoices": "invoice list / table of all invoices",
 }
@@ -56,7 +58,8 @@ MODE_NAMES = {"previous": "pichle period", "last_year": "pichle saal", "custom":
 TRANSCRIBE_HINT = (
     "Sindh Bakery sales dashboard. The speaker mixes Urdu, Hindi and English, e.g. "
     "yesterday sale, aaj ki sale, kal ki sale, parson, is hafte, is mahine, pichle mahine, "
-    "comparison, last year, top items, customers, invoices, heatmap, refresh, dark mode."
+    "comparison, last year, top items, customers, invoices, heatmap, refresh, dark mode, "
+    "live comparison, aaj vs kal, GCS, average check, pichle hafte."
 )
 
 ACTION_SCHEMA: dict[str, Any] = {
@@ -111,6 +114,12 @@ def _examples(today: date) -> str:
                                        "compare_start": p, "compare_end": p}),
         ("is mahine ka last year se comparison", {"start": m, "end": t, "section": "comparison", "compare_mode": "last_year"}),
         ("top items dikhao", {"section": "top_items"}),
+        ("sales trend dikhao", {"section": "monthly"}),
+        ("trend batao", {"section": "monthly"}),
+        ("aaj ki sale kal se compare karo", {"start": t, "end": t, "section": "live"}),
+        ("live comparison", {"section": "live"}),
+        ("GCS aur average check batao", {"section": "live"}),
+        ("kal ka pichle hafte se muqabla", {"start": y, "end": y, "section": "live"}),
     ]
     return "\n".join(f"- {q!r} -> {json.dumps(v, ensure_ascii=False)}" for q, v in rows)
 
@@ -134,7 +143,10 @@ Sections you can open (scroll to):
 {sections}
 Choose the section that best matches. Just asking for sales of a period ("yesterday sale", "aaj ki sale") -> section "kpis".
 
-Comparison: "comparison" / "muqabla" / "compare" -> section "comparison".
+Live board: a day against the day before / the same day last week, or GCS / average check / number of bills ->
+section "live" (start = end = the day named, e.g. today or yesterday; null if none named). It always shows both
+"vs yesterday" and "vs same day last week", so do not set compare_mode for it.
+Comparison: "comparison" / "muqabla" / "compare" with any other period -> section "comparison".
 "last year se" / "pichle saal" -> compare_mode "last_year"; "pichle period / pichle hafte se / pichle mahine se" when that equals the
 previous same-length window -> "previous"; two explicit periods -> range = the FIRST period, compare_mode "custom",
 compare_start/compare_end = the SECOND period. Example: "kal aur parson ka comparison" -> start = end = yesterday,
@@ -258,6 +270,41 @@ def _rs(v: float) -> str:
     return f"Rs {v:,.0f}"
 
 
+def _change(pct: float | None) -> str:
+    if pct is None:
+        return "pehle koi sale nahi thi"
+    if pct == 0:
+        return "barabar"
+    return f"{abs(pct):.1f} percent {'zyada' if pct > 0 else 'kam'}"
+
+
+async def _live_summary(rng: DateRange, today: date) -> str:
+    """Spoken version of the live board: sales, GCS and average check vs yesterday and vs last week."""
+    d, _ = await cached(f"sales:live:{rng.key()}", lambda: live.live_compare(rng), live=True)
+    p = d["periods"]
+    cur, prev, lw = p["current"]["totals"], p["previous"]["totals"], p["last_week"]["totals"]
+    single = d["days"] == 1
+    is_today = single and rng.start == today
+    name = "Aaj" if is_today else (f"{rng.start.day} {rng.start.strftime('%B')}" if single else "Is period")
+    prev_name = "kal" if is_today else ("pichle din" if single else "pichle period")
+    lw_name = "pichle hafte isi din" if single else "pichle hafte isi period"
+    if not cur["gcs"]:
+        prev_part = f"ki sale {_rs(prev['sales'])} thi" if prev["gcs"] else "bhi koi sale nahi thi"
+        lw_part = _rs(lw["sales"]) if lw["gcs"] else "bhi koi sale nahi"
+        return f"{name} abhi tak koi sale record nahi hui. {prev_name.capitalize()} {prev_part}, {lw_name} {lw_part}."
+
+    def versus(label: str, other: dict[str, Any], delta: dict[str, Any]) -> str:
+        if not other["gcs"]:
+            return f"{label.capitalize()} koi sale record nahi thi."
+        return (f"{label.capitalize()} se sale {_change(delta['sales']['pct'])}, bills {_change(delta['gcs']['pct'])}, "
+                f"average check {_change(delta['avg_check']['pct'])}.")
+
+    return (
+        f"{name} ki sale {_rs(cur['sales'])}, {cur['gcs']} bills, average check {_rs(cur['avg_check'])}. "
+        f"{versus(prev_name, prev, d['deltas']['previous'])} {versus(lw_name, lw, d['deltas']['last_week'])}"
+    )
+
+
 async def _summary(rng: DateRange, section: str | None, cmp_mode: str, cmp_rng: DateRange | None) -> str:
     """One spoken line with the live figure the user most likely wants."""
     try:
@@ -288,12 +335,14 @@ async def _summary(rng: DateRange, section: str | None, cmp_mode: str, cmp_rng: 
 
 
 async def _handle(text: str, today_s: str | None, start: date | None, end: date | None,
-                  cmp_mode: str, cmp_start: date | None, cmp_end: date | None) -> dict[str, Any]:
+                  cmp_mode: str, cmp_start: date | None, cmp_end: date | None,
+                  live_start: date | None = None, live_end: date | None = None) -> dict[str, Any]:
     today = _parse_day(today_s) or date.today()
     # the browser's local date may be a day off the server's (UTC on Vercel); trust it within a day
     if abs((today - date.today()).days) > 1:
         today = date.today()
     current = DateRange(start or today.replace(day=1), end or today)
+    live_rng = DateRange(live_start, live_end) if live_start and live_end and live_start <= live_end else DateRange(today, today)
     cmp_mode = cmp_mode if cmp_mode in COMPARE_MODES else "previous"
 
     if not text:
@@ -302,10 +351,15 @@ async def _handle(text: str, today_s: str | None, start: date | None, end: date 
     a = await _interpret(text, today, current, cmp_mode)
     actions: dict[str, Any] = {}
     new_rng = _clean_range(a.get("start"), a.get("end"), today) or _single_day_fallback(a, text, today)
-    if new_rng:
-        actions["range"] = new_rng.as_dict()
     section = a.get("section") if a.get("section") in SECTIONS else None
-    if a.get("compare_mode") in COMPARE_MODES:
+    if section == "live":
+        # the live board has its own date; a day named with it moves the board, not the whole dashboard
+        if new_rng:
+            live_rng = new_rng
+            actions["live_range"] = new_rng.as_dict()
+    elif new_rng:
+        actions["range"] = new_rng.as_dict()
+    if a.get("compare_mode") in COMPARE_MODES and section != "live":
         cmp_mode = a["compare_mode"]
         if section in (None, "kpis"):
             section = "comparison"
@@ -316,7 +370,7 @@ async def _handle(text: str, today_s: str | None, start: date | None, end: date 
         )
         if cmp_rng is None:  # custom without usable dates -> fall back to the previous window
             cmp_mode = "previous"
-    if a.get("compare_mode") in COMPARE_MODES:
+    if a.get("compare_mode") in COMPARE_MODES and section != "live":
         actions["compare"] = {"mode": cmp_mode, **({"range": cmp_rng.as_dict()} if cmp_rng else {})}
     if section:
         actions["section"] = section
@@ -328,7 +382,12 @@ async def _handle(text: str, today_s: str | None, start: date | None, end: date 
     understood = bool(a.get("understood")) and bool(actions)
     reply = (a.get("reply") or "").strip()
     summary = ""
-    if understood and (new_rng or section in ("kpis", "comparison") or actions.get("refresh")):
+    if understood and section == "live":
+        try:
+            summary = await _live_summary(live_rng, today)
+        except (ERPNextError, KeyError, TypeError) as exc:
+            log.warning("voice live summary failed: %s", exc)
+    elif understood and (new_rng or section in ("kpis", "comparison") or actions.get("refresh")):
         summary = await _summary(new_rng or current, section, cmp_mode, cmp_rng)
     return {
         "transcript": text,
@@ -345,6 +404,7 @@ async def voice_command(
     today: str | None = Query(default=None, description="browser's local date YYYY-MM-DD"),
     start: date | None = None, end: date | None = None,
     cmp_mode: str = "previous", cmp_start: date | None = None, cmp_end: date | None = None,
+    live_start: date | None = None, live_end: date | None = None,
 ):
     """Raw audio body (audio/webm, audio/ogg, audio/mp4, audio/wav) -> transcript + dashboard actions."""
     _settings_or_503()
@@ -354,7 +414,7 @@ async def voice_command(
     if len(audio) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="Recording too long, please keep it under 30 seconds")
     text = await _transcribe(audio, request.headers.get("content-type", "audio/webm"))
-    return await _handle(text, today, start, end, cmp_mode, cmp_start, cmp_end)
+    return await _handle(text, today, start, end, cmp_mode, cmp_start, cmp_end, live_start, live_end)
 
 
 class TextCommand(BaseModel):
@@ -365,12 +425,16 @@ class TextCommand(BaseModel):
     cmp_mode: str = "previous"
     cmp_start: date | None = None
     cmp_end: date | None = None
+    # date currently shown on the live comparison board
+    live_start: date | None = None
+    live_end: date | None = None
 
 
 @router.post("/text")
 async def voice_text(cmd: TextCommand):
     """Same as /command but for a typed sentence (no microphone needed)."""
-    return await _handle(cmd.text.strip(), cmd.today, cmd.start, cmd.end, cmd.cmp_mode, cmd.cmp_start, cmd.cmp_end)
+    return await _handle(cmd.text.strip(), cmd.today, cmd.start, cmd.end, cmd.cmp_mode, cmd.cmp_start, cmd.cmp_end,
+                         cmd.live_start, cmd.live_end)
 
 
 class SpeakRequest(BaseModel):

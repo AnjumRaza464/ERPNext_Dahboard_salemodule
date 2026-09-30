@@ -7,13 +7,29 @@ from fastapi import APIRouter, Depends, Query
 
 from ..cache import cached
 from ..dates import DateRange, date_range
-from ..services import sales
+from ..services import live, sales
 
 router = APIRouter(prefix="/api/sales", tags=["sales"])
 
 
 def _stamp(payload: dict[str, Any], was_cached: bool) -> dict[str, Any]:
     return {**payload, "cached": was_cached}
+
+
+def _live_range(
+    start: date | None = Query(default=None, description="YYYY-MM-DD; default = today"),
+    end: date | None = Query(default=None, description="YYYY-MM-DD; default = start (single day)"),
+) -> DateRange:
+    today = date.today()
+    return DateRange(start or today, end or start or today)
+
+
+@router.get("/live-compare")
+async def sales_live_compare(rng: DateRange = Depends(_live_range), refresh: bool = False):
+    """Range (default today) vs the period before and vs the same period last week:
+    net sales, GCS (guest checks) and average check, from POS Invoice. Short cache."""
+    value, hit = await cached(f"sales:live:{rng.key()}", lambda: live.live_compare(rng), refresh=refresh, live=True)
+    return _stamp(value, hit)
 
 
 @router.get("/kpis")

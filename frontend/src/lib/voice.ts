@@ -4,13 +4,15 @@ import type { CompareMode, Range } from "./types";
 
 /** Dashboard sections the voice assistant can scroll to (ids match backend/app/routers/voice.py). */
 export type VoiceSection =
-  | "kpis" | "pace" | "comparison" | "trend" | "monthly" | "item_groups" | "payment_modes" | "top_items" | "pareto"
-  | "outlets" | "composition" | "heatmap" | "by_hour" | "by_weekday" | "distribution" | "customers" | "invoices";
+  | "live" | "kpis" | "pace" | "comparison" | "monthly" | "item_groups" | "payment_modes" | "top_items" | "pareto"
+  | "outlets" | "composition" | "heatmap" | "by_hour" | "by_weekday" | "customers" | "invoices";
 
 export const sectionId = (s: VoiceSection) => `sec-${s}`;
 
 export interface VoiceActions {
   range?: Range;
+  /** date for the live comparison board (it has its own date, separate from the dashboard range) */
+  live_range?: Range;
   section?: VoiceSection;
   compare?: { mode: CompareMode; range?: Range };
   refresh?: boolean;
@@ -32,10 +34,18 @@ export interface CompareCommand {
   nonce: number;
 }
 
+/** Date command handed from the voice assistant to the live comparison board. */
+export interface LiveCommand {
+  range: Range;
+  nonce: number;
+}
+
 export interface VoiceContext {
   range: Range;
   cmpMode: CompareMode;
   cmpRange?: Range;
+  /** what the live comparison board is currently showing */
+  liveRange?: Range;
 }
 
 function contextParams(ctx: VoiceContext): Record<string, string> {
@@ -43,6 +53,10 @@ function contextParams(ctx: VoiceContext): Record<string, string> {
   if (ctx.cmpMode === "custom" && ctx.cmpRange) {
     p.cmp_start = ctx.cmpRange.start;
     p.cmp_end = ctx.cmpRange.end;
+  }
+  if (ctx.liveRange) {
+    p.live_start = ctx.liveRange.start;
+    p.live_end = ctx.liveRange.end;
   }
   return p;
 }

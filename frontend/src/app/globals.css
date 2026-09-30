@@ -162,3 +162,49 @@ body {
 .voice-flash {
   animation: voice-flash 2s ease-out;
 }
+
+/* Live comparison board: tick flash when a figure moves between refreshes, and the live indicator */
+@keyframes tick-up {
+  0% {
+    background-color: color-mix(in srgb, var(--good) 24%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@keyframes tick-down {
+  0% {
+    background-color: color-mix(in srgb, var(--bad) 24%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.tick-up {
+  animation: tick-up 1.5s ease-out;
+}
+.tick-down {
+  animation: tick-down 1.5s ease-out;
+}
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--ink-3);
+}
+.live-dot-on {
+  background: var(--good);
+  animation: live-pulse 2s ease-out infinite;
+}
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}

@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     erpnext_company: str = "Sindh Bakery"
     frontend_origins: str = "http://localhost:3000"
     cache_ttl_seconds: int = 120
+    # The live comparison board polls often; keep its answers only briefly so refreshes stay fresh.
+    live_cache_ttl_seconds: int = 15
     request_timeout_seconds: float = 60.0
 
     # Voice assistant (OpenAI). Empty key disables /api/voice/* with a clear 503.

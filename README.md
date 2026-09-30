@@ -53,6 +53,7 @@ today) and `refresh=1` to bypass the 2-minute in-memory cache.
 | Endpoint | Data | Source |
 |---|---|---|
 | `GET /api/health` | ERPNext connectivity check | — |
+| `GET /api/sales/live-compare` | live board: the range (default today) vs the same-length window before it (yesterday) and vs the same window one week earlier, for net sales, **GCS** (guest checks) and **average check**, with hourly (single day) or daily cumulative curves; short `LIVE_CACHE_TTL_SECONDS` cache | POS Invoice (+ non-consolidated Sales Invoice) |
 | `GET /api/sales/kpis` | total sales, invoice count, avg invoice, outstanding, deltas vs previous period | Sales Invoice |
 | `GET /api/sales/invoices` | all submitted invoices in range (table / CSV) | Sales Invoice |
 | `GET /api/sales/trend` | daily (≤92 days) or monthly sales | Sales Invoice |
@@ -76,20 +77,36 @@ today) and `refresh=1` to bypass the 2-minute in-memory cache.
 | `POST /api/voice/text` | same for a typed sentence `{text}` | OpenAI |
 | `POST /api/voice/speak` | `{text}` -> MP3 of the reply | OpenAI |
 
-Every payload carries `source` (`sales_invoice` or `sales_invoice_item`) and
-`cached` (whether it was served from the 2-minute cache).
+Every payload carries `source` (`sales_invoice`, `sales_invoice_item` or `pos_invoice`) and
+`cached` (whether it was served from the cache).
 
 Interactive docs: http://localhost:8010/docs
 
 ## Dashboard layout
 
+Header: ERPNext connection status, the **Voice** button, an **Auto-refresh** selector (Off / 30 s / 1 / 2 / 5 / 10 min,
+default `NEXT_PUBLIC_AUTO_REFRESH_SECONDS`, remembered in the browser) that reloads *every* panel from ERPNext on that
+interval bypassing the backend cache (paused while the tab is hidden, fires at once when it is shown again), a countdown
+to the next reload, **Refresh Now** (immediate reload, restarts the countdown) and the dark-mode toggle. Short intervals
+mean more ERPNext load: each reload is ~20 API calls.
+
 1. KPI row (totals vs previous period) and a **pace row** (avg per active day, best / lowest day, projected month-end).
-2. **Comparison** block: choose *Previous period*, *Same period last year* or a *Custom period*; shows a KPI
+2. **Today vs Yesterday vs Last Week Same Day Analysis** board (own date control, independent of the range filter): the selected day (default today) vs yesterday and
+   vs the same day last week, for **Net Sales**, **GCS** (guest checks = POS bills) and **Average Check**
+   (net sales ÷ GCS), shown trading-style with ▲/▼ arrows, % and absolute change, a running-total curve of the
+   three days (sales or GCS) and a side-by-side table. Picking a date range compares it with the previous
+   same-length window and the same window a week earlier. The three metrics sit in one board because they explain
+   each other (sales = GCS × average check), which is the usual guidance for restaurant / retail daily reporting.
+   Figures come from **POS Invoice**, so today's bills appear as soon as they are rung up, before the POS closing
+   creates the Sales Invoice. The board polls ERPNext on a configurable interval (Off / 15 s / 30 s / 1 / 2 / 5 min,
+   default `NEXT_PUBLIC_LIVE_REFRESH_SECONDS`; paused while the tab is hidden) and has its own **Refresh** button;
+   a tile flashes green / red when its figure moves between refreshes.
+3. **Comparison** block: choose *Previous period*, *Same period last year* or a *Custom period*; shows a KPI
    side-by-side table, daily / cumulative curves, item-group, top-item and weekday comparisons, and the biggest movers.
    The chosen mode and custom dates are remembered in the browser.
-3. Trends, mix & patterns: sales trend, 12-month history (MoM), item-group and payment-mode donuts, top items
-   (bars or share donut), Pareto / ABC concentration, weekday × hour heatmap, hour / weekday columns, invoice
-   value distribution, composition waterfall, outlets, top customers, and the invoice table.
+4. Trends, mix & patterns: 12-month history (MoM), item-group and payment-mode donuts, top items
+   (share donut by default, or bars), Pareto / ABC concentration, weekday × hour heatmap, hour / weekday columns,
+   composition waterfall, outlets, top customers, and the invoice table.
 
 ## Voice assistant
 
@@ -97,6 +114,7 @@ The **Voice** button in the header lets you drive the dashboard by speaking (Urd
 
 | Say | Dashboard does |
 |---|---|
+| "aaj ki sale kal se compare karo" / "live comparison" / "GCS aur average check batao" | opens the live board (moves it to the day named, if any) and reads out sales, GCS and average check vs yesterday and vs the same day last week |
 | "yesterday sale" / "kal ki sale" | range = yesterday, scrolls to the KPI tiles, reads out the total |
 | "comparison" / "muqabla" | scrolls to the comparison block and reads current vs comparison period |
 | "is mahine ka last year se comparison" | range = this month, comparison mode = same period last year |

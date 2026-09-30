@@ -1,4 +1,4 @@
-export type Source = "sales_invoice" | "sales_invoice_item";
+export type Source = "sales_invoice" | "sales_invoice_item" | "pos_invoice";
 
 export interface Range {
   start: string;
@@ -375,4 +375,54 @@ export interface SalesComposition extends Base {
   invoice_count: number;
   return_count: number;
   discount_pct: number;
+}
+
+// ---------------------------------------------------------------- live comparison board
+
+export type LiveMetric = "sales" | "gcs" | "avg_check" | "qty";
+export type LivePeriodKey = "current" | "previous" | "last_week";
+
+export interface LiveTotals {
+  sales: number;
+  gross_sales: number;
+  returns_total: number;
+  /** guest checks: POS invoices rung up (returns excluded) */
+  gcs: number;
+  return_count: number;
+  /** net sales / gcs */
+  avg_check: number;
+  qty: number;
+}
+
+export interface LivePeriod {
+  key: LivePeriodKey;
+  range: Range;
+  totals: LiveTotals;
+}
+
+export interface LiveDelta {
+  abs: number;
+  pct: number | null;
+}
+
+export interface LivePoint {
+  index: number;
+  label: string;
+  dates: Record<LivePeriodKey, string>;
+  current: number | null;
+  previous: number | null;
+  last_week: number | null;
+  current_gcs: number | null;
+  previous_gcs: number | null;
+  last_week_gcs: number | null;
+}
+
+export interface LiveCompare extends Base {
+  as_of: string;
+  days: number;
+  granularity: "hour" | "day";
+  periods: Record<LivePeriodKey, LivePeriod>;
+  deltas: Record<"previous" | "last_week", Record<LiveMetric, LiveDelta>>;
+  points: LivePoint[];
+  last_trading_day: string | null;
 }

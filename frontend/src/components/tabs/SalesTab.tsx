@@ -4,20 +4,20 @@ import { useState } from "react";
 import { useApi } from "@/hooks/useApi";
 import { fmtDate, fmtRange, num, pct, pkr } from "@/lib/format";
 import type {
-  HourlySales, InvoiceDistribution, InvoicesResponse, ItemGroupSales, ItemPareto, MonthlySales, OutletSales, PaymentModes, Range, RunRate,
-  SalesComposition, SalesHeatmap, SalesKpis, SalesTrend, TopCustomers, TopItems, WeekdaySales,
+  HourlySales, InvoicesResponse, ItemGroupSales, ItemPareto, MonthlySales, OutletSales, PaymentModes, Range, RunRate,
+  SalesComposition, SalesHeatmap, SalesKpis, TopCustomers, TopItems, WeekdaySales,
 } from "@/lib/types";
 import Card from "../Card";
 import InvoicesTable from "../InvoicesTable";
 import KpiCard from "../KpiCard";
+import LiveCompare from "../LiveCompare";
 import SalesComparison from "../SalesComparison";
-import { sectionId, type CompareCommand } from "@/lib/voice";
+import { sectionId, type CompareCommand, type LiveCommand } from "@/lib/voice";
 import ColumnChart from "../charts/ColumnChart";
 import DonutChart from "../charts/DonutChart";
 import HeatmapGrid from "../charts/HeatmapGrid";
 import HorizontalBars from "../charts/HorizontalBars";
 import ParetoChart from "../charts/ParetoChart";
-import SalesTrendChart from "../charts/SalesTrendChart";
 import WaterfallChart from "../charts/WaterfallChart";
 
 export function SalesKpiRow({ kpis }: { kpis: ReturnType<typeof useApi<SalesKpis>> }) {
@@ -72,7 +72,6 @@ function ViewToggle<T extends string>({ value, options, onChange }: { value: T; 
 }
 
 export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refreshKey: number; onRetry: () => void }) {
-  const trend = useApi<SalesTrend>("/api/sales/trend", range, refreshKey);
   const monthly = useApi<MonthlySales>("/api/sales/monthly", range, refreshKey, { months: 12 });
   const items = useApi<TopItems>("/api/sales/top-items", range, refreshKey, { limit: 10 });
   const pareto = useApi<ItemPareto>("/api/sales/item-pareto", range, refreshKey, { limit: 30 });
@@ -82,31 +81,15 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
   const hours = useApi<HourlySales>("/api/sales/by-hour", range, refreshKey);
   const weekdays = useApi<WeekdaySales>("/api/sales/by-weekday", range, refreshKey);
   const heat = useApi<SalesHeatmap>("/api/sales/heatmap", range, refreshKey);
-  const dist = useApi<InvoiceDistribution>("/api/sales/invoice-distribution", range, refreshKey);
   const composition = useApi<SalesComposition>("/api/sales/composition", range, refreshKey);
   const customers = useApi<TopCustomers>("/api/sales/top-customers", range, refreshKey, { limit: 10 });
-  const [itemsView, setItemsView] = useState<"bars" | "donut">("bars");
+  const [itemsView, setItemsView] = useState<"bars" | "donut">("donut");
 
   const monthRows = monthly.data ? monthly.data.points.map((p) => ({ ...p, value: p.total })) : [];
   const bestMonth = monthly.data?.points.find((p) => p.period === monthly.data?.best_month);
 
   return (
     <>
-      <Card
-        title="Sales Trend"
-        id={sectionId("trend")}
-        subtitle={trend.data ? (trend.data.granularity === "day" ? "Daily invoiced sales (PKR)" : "Monthly invoiced sales (PKR)") : undefined}
-        source={trend.data?.source}
-        loading={trend.loading}
-        refreshing={trend.refreshing}
-        error={trend.error}
-        empty={!!trend.data && trend.data.points.every((p) => p.total === 0)}
-        onRetry={onRetry}
-        className="lg:col-span-2"
-      >
-        {trend.data && <SalesTrendChart data={trend.data} />}
-      </Card>
-
       <Card
         title="Monthly Sales History"
         id={sectionId("monthly")}
@@ -367,28 +350,6 @@ export function SalesCharts({ range, refreshKey, onRetry }: { range: Range; refr
       </Card>
 
       <Card
-        title="Invoice Value Distribution"
-        id={sectionId("distribution")}
-        subtitle={dist.data ? `${num(dist.data.stats.count)} invoices · median ${pkr(dist.data.stats.median)} · 90% under ${pkr(dist.data.stats.p90)} · max ${pkr(dist.data.stats.max)}` : undefined}
-        source={dist.data?.source}
-        loading={dist.loading}
-        refreshing={dist.refreshing}
-        error={dist.error}
-        empty={!!dist.data && dist.data.stats.count === 0}
-        onRetry={onRetry}
-      >
-        {dist.data && (
-          <ColumnChart
-            rows={dist.data.buckets.map((b) => ({ label: b.bucket, value: b.invoice_count, total: b.total }))}
-            format={(v, e) => `${num(v)} invoices · ${pkr(Number(e.payload?.total))}`}
-            seriesName="Invoices"
-            ordinal
-            yFormat={(v) => num(v)}
-          />
-        )}
-      </Card>
-
-      <Card
         title="Top Customers"
         id={sectionId("customers")}
         subtitle={customers.data ? `Top ${customers.data.customers.length} of ${num(customers.data.distinct_customers)} customers by sales value` : undefined}
@@ -448,7 +409,9 @@ export function SectionHeading({ title, hint, id }: { title: string; hint: strin
   );
 }
 
-export default function SalesTab({ range, refreshKey, onRetry, compareCommand }: { range: Range; refreshKey: number; onRetry: () => void; compareCommand?: CompareCommand }) {
+export default function SalesTab({
+  range, refreshKey, onRetry, compareCommand, liveCommand,
+}: { range: Range; refreshKey: number; onRetry: () => void; compareCommand?: CompareCommand; liveCommand?: LiveCommand }) {
   const kpis = useApi<SalesKpis>("/api/sales/kpis", range, refreshKey);
   const pace = useApi<RunRate>("/api/sales/run-rate", range, refreshKey);
   const invoices = useApi<InvoicesResponse>("/api/sales/invoices", range, refreshKey);
@@ -460,6 +423,8 @@ export default function SalesTab({ range, refreshKey, onRetry, compareCommand }:
       <div id={sectionId("pace")} className="scroll-mt-4">
         <SalesPaceRow pace={pace} />
       </div>
+      {/* Live board keeps its own date (default today), independent of the range filter above */}
+      <LiveCompare refreshKey={refreshKey} onRetry={onRetry} command={liveCommand} />
       <SectionHeading id={sectionId("comparison")} title="Comparison" hint="how this range stacks up against another period" />
       <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} command={compareCommand} />
       <SectionHeading title="Trends, Mix & Patterns" hint="what sells, when, and how it is paid for" />

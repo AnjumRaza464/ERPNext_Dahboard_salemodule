@@ -5,7 +5,9 @@ import { API_BASE, fetchJson } from "@/lib/api";
 import { isPreset, PRESETS, presetRange, type Preset } from "@/lib/dates";
 import { fmtRange, fmtTime } from "@/lib/format";
 import type { CompareMode, Range } from "@/lib/types";
-import { sectionId, type CompareCommand, type VoiceActions, type VoiceContext, type VoiceSection } from "@/lib/voice";
+import { sectionId, type CompareCommand, type LiveCommand, type VoiceActions, type VoiceContext, type VoiceSection } from "@/lib/voice";
+import { useAutoRefresh } from "@/hooks/useAutoRefresh";
+import { AutoRefreshControl, DASHBOARD_INTERVALS, parseIntervalEnv, RefreshCountdown, withDefault } from "./AutoRefreshControl";
 import DateFilter from "./DateFilter";
 import SalesTab from "./tabs/SalesTab";
 import VoiceAssistant from "./VoiceAssistant";
@@ -16,6 +18,10 @@ interface Health {
   company?: string;
   voice_enabled?: boolean;
 }
+
+// Whole-dashboard auto-refresh: every panel reloads with refresh=1 (cache bypass) on this interval.
+const DEFAULT_AUTO_REFRESH = parseIntervalEnv(process.env.NEXT_PUBLIC_AUTO_REFRESH_SECONDS, 60);
+const AUTO_REFRESH_OPTIONS = withDefault(DASHBOARD_INTERVALS, DEFAULT_AUTO_REFRESH);
 
 function readStored<T>(key: string, fallback: T): T {
   try {
@@ -78,15 +84,21 @@ export default function Dashboard() {
   const [healthError, setHealthError] = useState<string | null>(null);
   const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
   const [compareCommand, setCompareCommand] = useState<CompareCommand | undefined>(undefined);
+  const [liveCommand, setLiveCommand] = useState<LiveCommand | undefined>(undefined);
+  const [autoSec, setAutoSec] = useState<number>(() => {
+    const v = readStored<number>("sb-auto-refresh", DEFAULT_AUTO_REFRESH);
+    return Number.isFinite(v) && v >= 0 ? v : DEFAULT_AUTO_REFRESH;
+  });
 
   useEffect(() => {
     try {
       localStorage.setItem("sb-preset", JSON.stringify(preset));
       localStorage.setItem("sb-range", JSON.stringify(range));
+      localStorage.setItem("sb-auto-refresh", JSON.stringify(autoSec));
     } catch {
       /* ignore */
     }
-  }, [preset, range]);
+  }, [preset, range, autoSec]);
 
   const checkHealth = useCallback(() => {
     fetchJson<Health>(`${API_BASE}/api/health`)
@@ -112,6 +124,13 @@ export default function Dashboard() {
     checkHealth();
   }, [checkHealth]);
 
+  // Whole-dashboard auto-refresh (paused while the tab is hidden); a manual refresh restarts the countdown.
+  const { nextAt: autoNextAt, restart: restartAuto } = useAutoRefresh(autoSec, refresh);
+  const refreshNow = useCallback(() => {
+    refresh();
+    restartAuto();
+  }, [refresh, restartAuto]);
+
   const onRangeChange = (p: Preset, r: Range) => {
     setPreset(p);
     setRange(p === "custom" ? r : presetRange(p));
@@ -133,6 +152,7 @@ export default function Dashboard() {
     range,
     cmpMode: readStored<CompareMode>("sb-cmp-mode", "previous"),
     cmpRange: readStored<Range | undefined>("sb-cmp-range", undefined),
+    liveRange: readStored<Range | undefined>("sb-live-range", undefined),
   });
 
   const applyVoice = (a: VoiceActions) => {
@@ -140,13 +160,14 @@ export default function Dashboard() {
       setPreset(presetFor(a.range));
       setRange(a.range);
     }
+    if (a.live_range) setLiveCommand({ range: a.live_range, nonce: Date.now() });
     if (a.compare) setCompareCommand({ ...a.compare, nonce: Date.now() });
     if (a.theme) setTheme(a.theme === "dark");
-    if (a.refresh) refresh();
+    if (a.refresh) refreshNow();
     if (a.section) revealSection(a.section);
   };
 
-  const tabProps = { range, refreshKey, onRetry: refresh, compareCommand };
+  const tabProps = { range, refreshKey, onRetry: refresh, compareCommand, liveCommand };
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-4 px-4 py-4 sm:px-6">
@@ -165,10 +186,25 @@ export default function Dashboard() {
           </span>
           {lastRefresh && <span className="hidden text-xs text-ink-3 md:inline">Updated {fmtTime(lastRefresh)}</span>}
           <VoiceAssistant enabled={health?.voice_enabled !== false} getContext={voiceContext} onActions={applyVoice} />
+          <span className="flex items-center gap-2 rounded-md border border-line bg-surface px-2 py-1">
+            <AutoRefreshControl
+              value={autoSec}
+              options={AUTO_REFRESH_OPTIONS}
+              onChange={(v) => {
+                setAutoSec(v);
+                restartAuto();
+              }}
+              showDot
+              title="Reload every panel from ERPNext on this interval (paused while the tab is hidden)"
+            />
+            <span className="hidden text-xs text-ink-3 lg:inline">
+              <RefreshCountdown nextAt={autoNextAt} intervalSec={autoSec} prefix="next in " offText={null} />
+            </span>
+          </span>
           <button
-            onClick={refresh}
+            onClick={refreshNow}
             className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink hover:bg-surface-2"
-            title="Bypass the 2-minute cache and reload every panel"
+            title="Bypass the cache and reload every panel right now"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 12a9 9 0 11-2.64-6.36M21 3v6h-6" />
@@ -207,7 +243,7 @@ export default function Dashboard() {
       <SalesTab {...tabProps} />
 
       <footer className="pb-4 pt-2 text-center text-[11px] text-ink-3">
-        Figures come live from ERPNext via the local FastAPI proxy · cached for 2 minutes · use Refresh Now for the latest numbers
+        Figures come live from ERPNext via the FastAPI proxy · auto-refresh reloads every panel on the interval set in the header · Refresh Now does it immediately
       </footer>
     </div>
   );
