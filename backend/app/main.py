@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from .cache import clear_cache
 from .config import get_settings
 from .erpnext_client import ERPNextError, close_client, get_client
+from .routers import costing as costing_router
 from .routers import sales as sales_router
 from .routers import voice as voice_router
 
@@ -46,6 +47,7 @@ async def erpnext_error_handler(_: Request, exc: ERPNextError):
 
 
 app.include_router(sales_router.router)
+app.include_router(costing_router.router)
 app.include_router(voice_router.router)
 
 

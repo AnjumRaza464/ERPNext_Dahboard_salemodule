@@ -9,6 +9,7 @@ import { sectionId, type CompareCommand, type LiveCommand, type VoiceActions, ty
 import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { AutoRefreshControl, DASHBOARD_INTERVALS, parseIntervalEnv, RefreshCountdown, withDefault } from "./AutoRefreshControl";
 import DateFilter from "./DateFilter";
+import CostingTab from "./tabs/CostingTab";
 import SalesTab from "./tabs/SalesTab";
 import VoiceAssistant from "./VoiceAssistant";
 
@@ -22,6 +23,14 @@ interface Health {
 // Whole-dashboard auto-refresh: every panel reloads with refresh=1 (cache bypass) on this interval.
 const DEFAULT_AUTO_REFRESH = parseIntervalEnv(process.env.NEXT_PUBLIC_AUTO_REFRESH_SECONDS, 60);
 const AUTO_REFRESH_OPTIONS = withDefault(DASHBOARD_INTERVALS, DEFAULT_AUTO_REFRESH);
+
+// Top-level dashboard tabs. The date range in the control bar applies to whichever tab is open.
+type Tab = "sales" | "costing";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "sales", label: "Sales" },
+  { id: "costing", label: "Costing" },
+];
+const isTab = (v: unknown): v is Tab => TABS.some((t) => t.id === v);
 
 function readStored<T>(key: string, fallback: T): T {
   try {
@@ -78,6 +87,10 @@ export default function Dashboard() {
     const r = readStored<Range | null>("sb-range", null);
     return p === "custom" && r ? r : presetRange(p);
   });
+  const [tab, setTab] = useState<Tab>(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    return isTab(t) ? t : readStored<Tab>("sb-tab", "sales");
+  });
   const [refreshKey, setRefreshKey] = useState(0);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
@@ -95,10 +108,11 @@ export default function Dashboard() {
       localStorage.setItem("sb-preset", JSON.stringify(preset));
       localStorage.setItem("sb-range", JSON.stringify(range));
       localStorage.setItem("sb-auto-refresh", JSON.stringify(autoSec));
+      localStorage.setItem("sb-tab", JSON.stringify(tab));
     } catch {
       /* ignore */
     }
-  }, [preset, range, autoSec]);
+  }, [preset, range, autoSec, tab]);
 
   const checkHealth = useCallback(() => {
     fetchJson<Health>(`${API_BASE}/api/health`)
@@ -156,6 +170,8 @@ export default function Dashboard() {
   });
 
   const applyVoice = (a: VoiceActions) => {
+    // Voice commands address the sales panels, so bring that tab forward first.
+    if (a.range || a.live_range || a.compare || a.section) setTab("sales");
     if (a.range) {
       setPreset(presetFor(a.range));
       setRange(a.range);
@@ -233,14 +249,29 @@ export default function Dashboard() {
       )}
 
       <div className="card flex flex-wrap items-center justify-between gap-3 px-3 py-2.5">
-        <h2 className="px-1 text-sm font-semibold text-ink">Sales</h2>
+        <div role="tablist" aria-label="Dashboard section" className="flex rounded-lg border border-line bg-surface p-0.5">
+          {TABS.map((t) => {
+            const active = t.id === tab;
+            return (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(t.id)}
+                className={`rounded-md px-3 py-1.5 text-sm font-semibold transition-colors ${active ? "bg-accent text-white shadow-sm" : "text-ink-2 hover:bg-surface-2"}`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
         <div className="flex flex-wrap items-center gap-3">
           <DateFilter key={`${range.start}|${range.end}`} preset={preset} range={range} onChange={onRangeChange} />
           <span className="tnum text-xs text-ink-3">{fmtRange(range.start, range.end)}</span>
         </div>
       </div>
 
-      <SalesTab {...tabProps} />
+      {tab === "sales" ? <SalesTab {...tabProps} /> : <CostingTab range={range} refreshKey={refreshKey} onRetry={refresh} />}
 
       <footer className="pb-4 pt-2 text-center text-[11px] text-ink-3">
         Figures come live from ERPNext via the FastAPI proxy · auto-refresh reloads every panel on the interval set in the header · Refresh Now does it immediately

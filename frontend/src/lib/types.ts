@@ -1,4 +1,4 @@
-export type Source = "sales_invoice" | "sales_invoice_item" | "pos_invoice" | "pos_invoice_item";
+export type Source = "sales_invoice" | "sales_invoice_item" | "pos_invoice" | "pos_invoice_item" | "stock_entry" | "purchase_invoice" | "bin";
 
 export interface Range {
   start: string;
@@ -522,4 +522,174 @@ export interface LiveCompare extends Base {
   last_trading_day: string | null;
   day_close: { first_bill: string; last_bill: string } | null;
   note?: string;
+}
+
+// ------------------------------------------------------------------ costing (raw material)
+
+/** Period totals for the Costing tab: purchases (Purchase Invoice), production consumption and output (Stock Entry). */
+export interface CostingTotals {
+  net_sales: number;
+  raw_purchases: number;
+  raw_purchase_qty: number;
+  raw_purchase_items: number;
+  purchases_total: number;
+  purchase_invoices: number;
+  purchase_days: number;
+  consumed: number;
+  raw_consumed: number;
+  packaging_consumed: number;
+  consumed_qty: number;
+  consumed_items: number;
+  batches: number;
+  production_days: number;
+  produced_value: number;
+  produced_qty: number;
+  produced_items: number;
+  /** material consumed as % of net sales */
+  material_cost_pct: number | null;
+  raw_purchases_pct_of_sales: number | null;
+  /** finished-goods value booked per PKR 100 of material consumed */
+  yield_pct: number | null;
+  avg_consumed_per_production_day: number;
+  avg_consumed_per_day: number;
+  /** raw material bought minus raw material used */
+  purchase_gap: number;
+  calendar_days: number;
+}
+
+export interface CostingStockSummary {
+  raw_value: number;
+  raw_items: number;
+  packaging_value: number;
+  total_value: number;
+  raw_days_cover: number | null;
+  by_warehouse: { warehouse: string; value: number; items: number }[];
+}
+
+export interface CostingKpis extends Base {
+  previous_range: Range;
+  current: CostingTotals;
+  previous: CostingTotals;
+  delta_pct: Partial<Record<keyof CostingTotals, number | null>>;
+  /** ratio changes in percentage points */
+  delta_points: { material_cost_pct: number | null; yield_pct: number | null; raw_purchases_pct_of_sales: number | null };
+  stock: CostingStockSummary;
+  health: { last_purchase_date: string | null; last_production_date: string | null; today: string };
+}
+
+export interface CostingTrendPoint {
+  period: string;
+  purchased: number;
+  purchased_all: number;
+  consumed: number;
+  produced: number;
+  batches: number;
+}
+
+export interface CostingTrend extends Base {
+  granularity: "day" | "month";
+  points: CostingTrendPoint[];
+  totals: { purchased: number; purchased_all: number; consumed: number; produced: number };
+}
+
+export interface ConsumedItem {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  qty: number;
+  amount: number;
+  rate: number;
+  entries: number;
+  share_pct: number;
+  prev_amount: number;
+  delta_pct: number | null;
+  prev_rate: number | null;
+  rate_change_pct: number | null;
+}
+
+export interface ProducedItem {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  qty: number;
+  amount: number;
+  rate: number;
+  entries: number;
+  share_pct: number;
+}
+
+export interface CostingGroupRow {
+  item_group: string;
+  amount: number;
+  qty: number;
+  items: number;
+  share_pct: number;
+}
+
+export interface CostingConsumption extends Base {
+  previous_range: Range;
+  total: number;
+  distinct_items: number;
+  by_department: { department: string; amount: number; entries: number; items: number; share_pct: number }[];
+  by_group: CostingGroupRow[];
+  items: ConsumedItem[];
+  other_amount: number;
+  produced: ProducedItem[];
+  produced_total: number;
+  produced_other: number;
+  produced_distinct_items: number;
+}
+
+export interface PurchasedItem {
+  item_code: string;
+  item_name: string;
+  uom: string;
+  qty: number;
+  amount: number;
+  rate: number;
+  invoices: number;
+  share_pct: number;
+  last_rate: number | null;
+  last_date: string | null;
+  prev_rate: number | null;
+  rate_change_pct: number | null;
+}
+
+export interface CostingPurchases extends Base {
+  previous_range: Range;
+  total: number;
+  raw_total: number;
+  invoices: number;
+  distinct_items: number;
+  by_supplier: { supplier: string; amount: number; invoices: number; items: number; share_pct: number }[];
+  by_group: CostingGroupRow[];
+  items: PurchasedItem[];
+  other_amount: number;
+}
+
+export interface StockItem {
+  item_code: string;
+  item_name: string;
+  uom: string;
+  qty: number;
+  value: number;
+  valuation_rate: number;
+  warehouses: number;
+  share_pct: number;
+  used_qty: number;
+  daily_use: number;
+  days_cover: number | null;
+}
+
+export interface CostingStock extends Base {
+  item_group: string;
+  as_of: string;
+  total_value: number;
+  distinct_items: number;
+  by_warehouse: { warehouse: string; value: number; items: number; share_pct: number }[];
+  items: StockItem[];
+  other_value: number;
+  groups: { item_group: string; value: number; items: number }[];
 }
