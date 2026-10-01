@@ -31,7 +31,7 @@ async def costing_trend(rng: DateRange = Depends(date_range), refresh: bool = Fa
 
 
 @router.get("/consumption")
-async def costing_consumption(rng: DateRange = Depends(date_range), limit: int = Query(default=15, ge=1, le=100), refresh: bool = False):
+async def costing_consumption(rng: DateRange = Depends(date_range), limit: int = Query(default=15, ge=0, le=1000, description="0 = every row"), refresh: bool = False):
     """Material consumed in production (Repack entries): by department, by item group, top items with the change
     vs the previous window, plus the finished goods those entries produced."""
     value, hit = await cached(f"costing:consumption:{rng.key()}:{limit}", lambda: costing.consumption(rng, limit, refresh=refresh), refresh=refresh)
@@ -39,7 +39,7 @@ async def costing_consumption(rng: DateRange = Depends(date_range), limit: int =
 
 
 @router.get("/purchases")
-async def costing_purchases(rng: DateRange = Depends(date_range), limit: int = Query(default=15, ge=1, le=100), refresh: bool = False):
+async def costing_purchases(rng: DateRange = Depends(date_range), limit: int = Query(default=15, ge=0, le=1000, description="0 = every row"), refresh: bool = False):
     """Purchase invoices in the range: by supplier, by item group, and the top raw materials with average,
     last-paid and previous-window rates (price watch)."""
     value, hit = await cached(f"costing:purchases:{rng.key()}:{limit}", lambda: costing.purchases(rng, limit, refresh=refresh), refresh=refresh)
@@ -48,9 +48,42 @@ async def costing_purchases(rng: DateRange = Depends(date_range), limit: int = Q
 
 @router.get("/stock")
 async def costing_stock(
-    rng: DateRange = Depends(date_range), limit: int = Query(default=20, ge=1, le=200),
+    rng: DateRange = Depends(date_range), limit: int = Query(default=20, ge=0, le=1000, description="0 = every row"),
     group: str = Query(default="Raw Material", description="item group to list"), refresh: bool = False,
 ):
     """Stock on hand right now (Bin) for one item group, with days of cover at this range's average daily usage."""
     value, hit = await cached(f"costing:stock:{rng.key()}:{limit}:{group}", lambda: costing.stock(rng, limit, group, refresh=refresh), refresh=refresh)
+    return _stamp(value, hit)
+
+
+@router.get("/departments")
+async def costing_departments(
+    rng: DateRange = Depends(date_range), limit: int = Query(default=10, ge=1, le=50), refresh: bool = False,
+    weekdays: str | None = Query(default=None, description="comma-separated weekday names to keep, e.g. Mon,Sat; empty = all"),
+):
+    """Department-wise consumption in detail: summary vs the previous window, day-by-day matrix, weekday averages,
+    top items per department and every production entry with what it used and produced."""
+    value, hit = await cached(f"costing:departments:{rng.key()}:{limit}:{weekdays or ''}", lambda: costing.departments(rng, limit, refresh=refresh, weekdays=weekdays), refresh=refresh)
+    return _stamp(value, hit)
+
+
+@router.get("/production")
+async def costing_production(
+    rng: DateRange = Depends(date_range), limit: int = Query(default=15, ge=1, le=50), refresh: bool = False,
+    weekdays: str | None = Query(default=None, description="comma-separated weekday names to keep, e.g. Mon,Sat; empty = all"),
+):
+    """Finished goods produced in detail: per producing department vs the previous window, day-by-day matrix,
+    weekday averages, top products (overall and per department) and every production entry."""
+    value, hit = await cached(f"costing:production:{rng.key()}:{limit}:{weekdays or ''}", lambda: costing.production(rng, limit, refresh=refresh, weekdays=weekdays), refresh=refresh)
+    return _stamp(value, hit)
+
+
+@router.get("/flow")
+async def costing_flow(
+    rng: DateRange = Depends(date_range), refresh: bool = False,
+    weekdays: str | None = Query(default=None, description="comma-separated weekday names to keep, e.g. Mon,Sat; empty = all"),
+):
+    """Purchases, consumption and output in detail: per-metric summary vs the previous window, day-by-day table
+    with running totals, weekday averages, and every purchase invoice in the range."""
+    value, hit = await cached(f"costing:flow:{rng.key()}:{weekdays or ''}", lambda: costing.flow(rng, refresh=refresh, weekdays=weekdays), refresh=refresh)
     return _stamp(value, hit)

@@ -2,10 +2,15 @@
 
 import { useState } from "react";
 import { useApi } from "@/hooks/useApi";
-import { downloadCsv, toCsv } from "@/lib/csv";
+import { exportTable, type ExportFormat } from "@/lib/csv";
 import { fmtDate, fmtPeriod, fmtRange, num, pkr } from "@/lib/format";
 import type { CostingConsumption, CostingKpis, CostingPurchases, CostingStock, CostingTrend, Range } from "@/lib/types";
 import Card from "../Card";
+import DepartmentDetail from "../DepartmentDetail";
+import ExportButtons from "../ExportButtons";
+import TableFilter from "../TableFilter";
+import FlowDetail from "../FlowDetail";
+import ProductionDetail from "../ProductionDetail";
 import DeltaText from "../DeltaText";
 import KpiCard from "../KpiCard";
 import DonutChart from "../charts/DonutChart";
@@ -34,12 +39,10 @@ function ViewToggle<T extends string>({ value, options, onChange }: { value: T; 
   );
 }
 
-function ExportButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button onClick={onClick} className="rounded-md border border-line px-2 py-0.5 text-[11px] font-medium text-ink-2 hover:bg-surface-2" title="Download this table as CSV">
-      CSV
-    </button>
-  );
+/** Rows whose item name or code contains `query` (case-insensitive), and whose group matches when one is picked. */
+function filterRows<T extends { item_name: string; item_code: string; item_group?: string }>(rows: T[], query: string, group = ""): T[] {
+  const q = query.trim().toLowerCase();
+  return rows.filter((r) => (!group || r.item_group === group) && (!q || r.item_name.toLowerCase().includes(q) || r.item_code.toLowerCase().includes(q)));
 }
 
 /** "+1.2 pts" / "−0.8 pts" for ratio changes measured in percentage points. */
@@ -132,11 +135,20 @@ function coverTone(days: number | null): string {
 export default function CostingTab({ range, refreshKey, onRetry }: Props) {
   const kpis = useApi<CostingKpis>("/api/costing/kpis", range, refreshKey);
   const trend = useApi<CostingTrend>("/api/costing/trend", range, refreshKey);
-  const consumption = useApi<CostingConsumption>("/api/costing/consumption", range, refreshKey, { limit: 15 });
-  const purchases = useApi<CostingPurchases>("/api/costing/purchases", range, refreshKey, { limit: 15 });
+  const consumption = useApi<CostingConsumption>("/api/costing/consumption", range, refreshKey, { limit: 0 });
+  const purchases = useApi<CostingPurchases>("/api/costing/purchases", range, refreshKey, { limit: 0 });
   const [stockGroup, setStockGroup] = useState<StockGroup>("Raw Material");
-  const stock = useApi<CostingStock>("/api/costing/stock", range, refreshKey, { limit: 20, group: stockGroup });
+  const stock = useApi<CostingStock>("/api/costing/stock", range, refreshKey, { limit: 0, group: stockGroup });
   const [trendView, setTrendView] = useState<TrendView>("purchases");
+  // Search / group filters on the three item tables; exports send out the filtered rows.
+  const [consumedQuery, setConsumedQuery] = useState("");
+  const [consumedGroup, setConsumedGroup] = useState("");
+  const [purchaseQuery, setPurchaseQuery] = useState("");
+  const [stockQuery, setStockQuery] = useState("");
+  const consumedRows = filterRows(consumption.data?.items ?? [], consumedQuery, consumedGroup);
+  const consumedGroups = Array.from(new Set((consumption.data?.items ?? []).map((r) => r.item_group))).sort();
+  const purchaseRows = filterRows(purchases.data?.items ?? [], purchaseQuery);
+  const stockRows = filterRows(stock.data?.items ?? [], stockQuery);
 
   const gran = trend.data?.granularity ?? "day";
   const trendRows = trend.data
@@ -151,11 +163,9 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
   const trendNames: [string, string] = trendView === "purchases" ? ["Raw material purchased", "Material consumed"] : ["Material consumed", "Finished goods produced"];
   const trendEmpty = !!trend.data && trend.data.totals.purchased === 0 && trend.data.totals.consumed === 0 && trend.data.totals.produced === 0;
 
-  const exportConsumed = () => {
+  const exportConsumed = (fmt: ExportFormat) => {
     if (!consumption.data) return;
-    downloadCsv(
-      `material-consumed-${range.start}-${range.end}.csv`,
-      toCsv(consumption.data.items, [
+    exportTable(fmt, `material-consumed-${range.start}-${range.end}`, consumedRows, [
         { key: "item_code", header: "Item code", value: (r) => r.item_code },
         { key: "item_name", header: "Item", value: (r) => r.item_name },
         { key: "item_group", header: "Group", value: (r) => r.item_group },
@@ -167,14 +177,11 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         { key: "prev", header: "Previous amount", value: (r) => r.prev_amount },
         { key: "delta", header: "Change %", value: (r) => r.delta_pct },
         { key: "entries", header: "Entries", value: (r) => r.entries },
-      ]),
-    );
+      ]);
   };
-  const exportPurchased = () => {
+  const exportPurchased = (fmt: ExportFormat) => {
     if (!purchases.data) return;
-    downloadCsv(
-      `raw-material-purchases-${range.start}-${range.end}.csv`,
-      toCsv(purchases.data.items, [
+    exportTable(fmt, `raw-material-purchases-${range.start}-${range.end}`, purchaseRows, [
         { key: "item_code", header: "Item code", value: (r) => r.item_code },
         { key: "item_name", header: "Item", value: (r) => r.item_name },
         { key: "qty", header: "Qty", value: (r) => r.qty },
@@ -187,14 +194,11 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         { key: "amount", header: "Amount", value: (r) => r.amount },
         { key: "share", header: "Share %", value: (r) => r.share_pct },
         { key: "invoices", header: "Invoices", value: (r) => r.invoices },
-      ]),
-    );
+      ]);
   };
-  const exportStock = () => {
+  const exportStock = (fmt: ExportFormat) => {
     if (!stock.data) return;
-    downloadCsv(
-      `${stockGroup.toLowerCase().replace(" ", "-")}-stock-${stock.data.as_of}.csv`,
-      toCsv(stock.data.items, [
+    exportTable(fmt, `${stockGroup.toLowerCase().replace(" ", "-")}-stock-${stock.data.as_of}`, stockRows, [
         { key: "item_code", header: "Item code", value: (r) => r.item_code },
         { key: "item_name", header: "Item", value: (r) => r.item_name },
         { key: "qty", header: "Qty", value: (r) => r.qty },
@@ -205,8 +209,7 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         { key: "used", header: "Used in range", value: (r) => r.used_qty },
         { key: "daily", header: "Daily use", value: (r) => r.daily_use },
         { key: "cover", header: "Days cover", value: (r) => r.days_cover },
-      ]),
-    );
+      ]);
   };
 
   return (
@@ -236,6 +239,8 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
           />
         )}
       </Card>
+
+      <FlowDetail range={range} refreshKey={refreshKey} onRetry={onRetry} />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card
@@ -322,9 +327,13 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         </Card>
       </div>
 
+      <DepartmentDetail range={range} refreshKey={refreshKey} onRetry={onRetry} />
+
+      <ProductionDetail range={range} refreshKey={refreshKey} onRetry={onRetry} />
+
       <Card
         title="Top Consumed Materials"
-        subtitle={consumption.data ? `Top ${consumption.data.items.length} of ${num(consumption.data.distinct_items)} materials by value used · ${pkr(consumption.data.other_amount)} in the rest · change vs ${fmtRange(consumption.data.previous_range.start, consumption.data.previous_range.end)}` : undefined}
+        subtitle={consumption.data ? `All ${num(consumption.data.distinct_items)} materials by value used · ${pkr(consumption.data.total)} total · change vs ${fmtRange(consumption.data.previous_range.start, consumption.data.previous_range.end)}` : undefined}
         source={consumption.data?.source}
         loading={consumption.loading}
         refreshing={consumption.refreshing}
@@ -333,12 +342,14 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         emptyHint="No production (Repack) entries in this range."
         onRetry={onRetry}
         height={200}
-        action={consumption.data && consumption.data.items.length > 0 ? <ExportButton onClick={exportConsumed} /> : undefined}
+        action={consumption.data && consumption.data.items.length > 0 ? <ExportButtons onExport={exportConsumed} /> : undefined}
       >
         {consumption.data && (
-          <div className="overflow-x-auto">
+          <div className="flex flex-col gap-2">
+            <TableFilter query={consumedQuery} onQuery={setConsumedQuery} group={consumedGroup} onGroup={setConsumedGroup} groups={consumedGroups} shown={consumedRows.length} total={consumption.data.items.length} />
+            <div className="max-h-[560px] overflow-auto">
             <table className="w-full min-w-[720px] text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10 bg-surface">
                 <tr className={thead}>
                   <th className={th}>Item</th>
                   <th className={th}>Group</th>
@@ -351,7 +362,7 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
                 </tr>
               </thead>
               <tbody className="tnum">
-                {consumption.data.items.map((r) => (
+                {consumedRows.map((r) => (
                   <tr key={r.item_code} className="border-b border-line/60">
                     <td className="py-1.5 text-ink" title={`${r.item_code} · used in ${num(r.entries)} entries`}>{r.item_name}</td>
                     <td className="py-1.5 text-ink-3">{r.item_group}</td>
@@ -365,13 +376,14 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </Card>
 
       <Card
         title="Raw Material Price Watch"
-        subtitle={purchases.data ? `Top ${purchases.data.items.length} of ${num(purchases.data.distinct_items)} raw materials bought · ${pkr(purchases.data.raw_total)} total · rates vs ${fmtRange(purchases.data.previous_range.start, purchases.data.previous_range.end)}` : undefined}
+        subtitle={purchases.data ? `All ${num(purchases.data.distinct_items)} raw materials bought · ${pkr(purchases.data.raw_total)} total · rates vs ${fmtRange(purchases.data.previous_range.start, purchases.data.previous_range.end)}` : undefined}
         source={purchases.data?.source}
         loading={purchases.loading}
         refreshing={purchases.refreshing}
@@ -380,12 +392,14 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         emptyHint="No raw material purchase invoices in this range."
         onRetry={onRetry}
         height={200}
-        action={purchases.data && purchases.data.items.length > 0 ? <ExportButton onClick={exportPurchased} /> : undefined}
+        action={purchases.data && purchases.data.items.length > 0 ? <ExportButtons onExport={exportPurchased} /> : undefined}
       >
         {purchases.data && (
-          <div className="overflow-x-auto">
+          <div className="flex flex-col gap-2">
+            <TableFilter query={purchaseQuery} onQuery={setPurchaseQuery} shown={purchaseRows.length} total={purchases.data.items.length} />
+            <div className="max-h-[560px] overflow-auto">
             <table className="w-full min-w-[760px] text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10 bg-surface">
                 <tr className={thead}>
                   <th className={th}>Item</th>
                   <th className={`${th} text-right`}>Qty</th>
@@ -398,7 +412,7 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
                 </tr>
               </thead>
               <tbody className="tnum">
-                {purchases.data.items.map((r) => (
+                {purchaseRows.map((r) => (
                   <tr key={r.item_code} className="border-b border-line/60">
                     <td className="py-1.5 text-ink" title={`${r.item_code} · ${num(r.invoices)} invoices`}>{r.item_name}</td>
                     <td className={tdNum}>{num(r.qty, 2)} <span className="text-ink-3">{r.uom}</span></td>
@@ -415,6 +429,7 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
       </Card>
@@ -437,14 +452,16 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         action={
           <div className="flex items-center gap-2">
             <ViewToggle value={stockGroup} options={[{ id: "Raw Material", label: "Raw Material" }, { id: "Packaging", label: "Packaging" }]} onChange={setStockGroup} />
-            {stock.data && stock.data.items.length > 0 && <ExportButton onClick={exportStock} />}
+            {stock.data && stock.data.items.length > 0 && <ExportButtons onExport={exportStock} />}
           </div>
         }
       >
         {stock.data && (
-          <div className="overflow-x-auto">
+          <div className="flex flex-col gap-2">
+            <TableFilter query={stockQuery} onQuery={setStockQuery} shown={stockRows.length} total={stock.data.items.length} />
+            <div className="max-h-[560px] overflow-auto">
             <table className="w-full min-w-[720px] text-xs">
-              <thead>
+              <thead className="sticky top-0 z-10 bg-surface">
                 <tr className={thead}>
                   <th className={th}>Item</th>
                   <th className={`${th} text-right`}>Qty</th>
@@ -456,7 +473,7 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
                 </tr>
               </thead>
               <tbody className="tnum">
-                {stock.data.items.map((r) => (
+                {stockRows.map((r) => (
                   <tr key={r.item_code} className="border-b border-line/60">
                     <td className="py-1.5 text-ink" title={`${r.item_code}${r.warehouses > 1 ? ` · in ${r.warehouses} warehouses` : ""}`}>{r.item_name}</td>
                     <td className={tdNum}>{num(r.qty, 2)} <span className="text-ink-3">{r.uom}</span></td>
@@ -472,6 +489,7 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
               </tbody>
             </table>
             {stock.data.other_value > 0 && <p className="mt-2 text-[11px] text-ink-3">{pkr(stock.data.other_value)} more in {num(stock.data.distinct_items - stock.data.items.length)} smaller items.</p>}
+            </div>
           </div>
         )}
       </Card>
