@@ -11,6 +11,9 @@ export function SourceBadge({ source }: { source?: Source }) {
     sales_invoice_item: { label: "Invoice Items", tone: "text-ink-3" },
     pos_invoice: { label: "POS bills", tone: "text-ink-3" },
     pos_invoice_item: { label: "POS bill items", tone: "text-ink-3" },
+    stock_entry: { label: "Stock Entries", tone: "text-ink-3" },
+    purchase_invoice: { label: "Purchase Invoices", tone: "text-ink-3" },
+    bin: { label: "Stock balance", tone: "text-ink-3" },
   };
   const m = map[source] ?? { label: source, tone: "text-ink-3" };
   return (
