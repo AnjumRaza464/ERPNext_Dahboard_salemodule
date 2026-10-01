@@ -362,6 +362,11 @@ def _group_items(df: pd.DataFrame) -> pd.DataFrame:
     return g.sort_values("amount", ascending=False).reset_index(drop=True)
 
 
+def _head(df: pd.DataFrame, limit: int) -> pd.DataFrame:
+    """First `limit` rows, or every row when limit is 0."""
+    return df if limit <= 0 else df.head(limit)
+
+
 def _share(value: float, total: float) -> float:
     return round(value / total * 100, 1) if total else 0.0
 
@@ -394,7 +399,7 @@ async def consumption(rng: DateRange, limit: int = 15, refresh: bool = False) ->
     cur_items = _group_items(consumed)
     prev_items = _group_items(se_prev[se_prev["kind"] == "consumed"]) if not se_prev.empty else _group_items(se_prev)
     prev_map = {r.item_code: (float(r.amount), float(r.rate)) for r in prev_items.itertuples()}
-    head = cur_items.head(limit)
+    head = _head(cur_items, limit)
     items = []
     for r in head.itertuples():
         p_amt, p_rate = prev_map.get(r.item_code, (0.0, 0.0))
@@ -408,7 +413,7 @@ async def consumption(rng: DateRange, limit: int = 15, refresh: bool = False) ->
 
     prod = _group_items(produced)
     produced_total = _sum(produced, "amount")
-    prod_head = prod.head(limit)
+    prod_head = _head(prod, limit)
     produced_items = [
         {"item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group, "uom": r.uom, "qty": round(float(r.qty), 3),
          "amount": round(float(r.amount), 2), "rate": round(float(r.rate), 2), "entries": int(r.entries),
@@ -459,7 +464,7 @@ async def purchases(rng: DateRange, limit: int = 15, refresh: bool = False) -> d
         latest = raw[raw["qty"] > 0].sort_values("date").groupby("item_code").tail(1)
         for r in latest.itertuples():
             last[r.item_code] = (r.date.strftime("%Y-%m-%d"), float(r.amount) / float(r.qty))
-    head = cur_items.head(limit)
+    head = _head(cur_items, limit)
     items = []
     for r in head.itertuples():
         p_rate = prev_map.get(r.item_code)
@@ -507,7 +512,7 @@ async def stock(rng: DateRange, limit: int = 20, group: str = RAW, refresh: bool
     per = df.groupby("item_code", as_index=False).agg(
         item_name=("item_name", "first"), uom=("uom", "first"), qty=("qty", "sum"), value=("value", "sum"), warehouses=("warehouse", "nunique"),
     ).sort_values("value", ascending=False).reset_index(drop=True)
-    head = per.head(limit)
+    head = _head(per, limit)
     items = []
     for r in head.itertuples():
         daily_use = used.get(r.item_code, 0.0) / rng.days if rng.days else 0.0
@@ -521,4 +526,420 @@ async def stock(rng: DateRange, limit: int = 20, group: str = RAW, refresh: bool
     return {
         **empty, "total_value": round(total, 2), "distinct_items": _nunique(per, "item_code"), "by_warehouse": by_warehouse,
         "items": items, "other_value": round(total - _sum(head, "value"), 2), "groups": groups,
+    }
+
+
+# ------------------------------------------------------------------ department detail
+
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+ENTRY_LIMIT = 300
+
+
+def weekday_set(weekdays: str | None) -> set[int] | None:
+    """'Mon,Sat' -> {0, 5}; None / empty / unknown names -> None (no weekday filter)."""
+    if not weekdays:
+        return None
+    out = {WEEKDAYS.index(w.strip()[:3].title()) for w in weekdays.split(",") if w.strip()[:3].title() in WEEKDAYS}
+    return out or None
+
+
+def _only_weekdays(df: pd.DataFrame, sel: set[int] | None) -> pd.DataFrame:
+    """Rows whose posting date falls on one of the selected weekdays (all rows when sel is None)."""
+    if sel is None or df.empty:
+        return df
+    return df[df["date"].dt.weekday.isin(sel)]
+
+
+def _days(rng: DateRange, sel: set[int] | None) -> pd.DatetimeIndex:
+    days = pd.date_range(rng.start, rng.end, freq="D")
+    return days if sel is None else days[[d.weekday() in sel for d in days]]
+
+
+async def departments(rng: DateRange, limit: int = 10, refresh: bool = False, weekdays: str | None = None) -> dict[str, Any]:
+    """Material consumption per production department in detail: summary vs the previous window,
+    day-by-day (or month) matrix, weekday averages, top items per department and every production entry."""
+    prev = rng.previous()
+    sel = weekday_set(weekdays)
+    se, se_prev = await asyncio.gather(_production_frame(rng, refresh), _production_frame(prev))
+    se, se_prev = _only_weekdays(se, sel), _only_weekdays(se_prev, sel)
+    empty = {"source": "stock_entry", "range": rng.as_dict(), "previous_range": prev.as_dict(), "granularity": rng.granularity,
+             "weekdays": sorted(WEEKDAYS[i] for i in sel) if sel else [],
+             "total": 0.0, "departments": [], "daily": [], "weekday": [], "items": {}, "entries": [], "entries_total": 0}
+    if se.empty:
+        return empty
+    consumed = se[se["kind"] == "consumed"].copy()
+    if consumed.empty:
+        return empty
+    consumed["dept"] = consumed["warehouse"].map(outlet_label)
+    produced = se[se["kind"] == "produced"]
+    total = _sum(consumed, "amount")
+    days_in_range = _days(rng, sel)
+
+    # --- summary per department, with the previous window
+    prev_c = se_prev[se_prev["kind"] == "consumed"].copy() if not se_prev.empty else se_prev
+    prev_map: dict[str, float] = {}
+    if not prev_c.empty:
+        prev_c["dept"] = prev_c["warehouse"].map(outlet_label)
+        prev_map = {str(k): float(v) for k, v in prev_c.groupby("dept")["amount"].sum().items()}
+    g = consumed.groupby("dept", as_index=False).agg(
+        amount=("amount", "sum"), qty=("qty", "sum"), entries=("parent", "nunique"), items=("item_code", "nunique"),
+        active_days=("date", lambda s: s.dt.normalize().nunique()),
+    ).sort_values("amount", ascending=False)
+    depts = [str(d) for d in g["dept"]]
+    summary = [
+        {"department": r.dept, "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3), "entries": int(r.entries), "items": int(r.items),
+         "active_days": int(r.active_days), "share_pct": _share(float(r.amount), total),
+         "avg_per_active_day": round(float(r.amount) / int(r.active_days), 2) if r.active_days else 0.0,
+         "prev_amount": round(prev_map.get(r.dept, 0.0), 2), "delta_pct": _pct(float(r.amount), prev_map.get(r.dept, 0.0))}
+        for r in g.itertuples()
+    ]
+
+    # --- day x department matrix (calendar days, zero-filled), monthly over long ranges
+    pivot = consumed.pivot_table(index=consumed["date"].dt.normalize(), columns="dept", values="amount", aggfunc="sum", fill_value=0.0)
+    pivot = pivot.reindex(days_in_range, fill_value=0.0).reindex(columns=depts, fill_value=0.0)
+    entries_per_day = consumed.groupby(consumed["date"].dt.normalize())["parent"].nunique().reindex(days_in_range, fill_value=0)
+    if rng.granularity == "month":
+        pivot = pivot.groupby(pivot.index.to_period("M")).sum()
+        pivot.index = pivot.index.to_timestamp()
+        entries_per_day = entries_per_day.groupby(entries_per_day.index.to_period("M")).sum()
+        entries_per_day.index = entries_per_day.index.to_timestamp()
+    daily = [
+        {"period": d.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[d.weekday()], "total": round(float(row.sum()), 2),
+         "entries": int(entries_per_day.get(d, 0)), "by_department": {k: round(float(v), 2) for k, v in row.items()}}
+        for d, row in pivot.iterrows()
+    ]
+
+    # --- weekday averages: per department, average over the days of that weekday that had any production
+    day_tot = consumed.groupby(consumed["date"].dt.normalize())["amount"].sum()
+    active = day_tot[day_tot > 0]
+    wd_pivot = consumed.pivot_table(index=consumed["date"].dt.normalize(), columns="dept", values="amount", aggfunc="sum", fill_value=0.0)
+    weekday = []
+    for i, name in enumerate(WEEKDAYS):
+        days = [d for d in active.index if d.weekday() == i]
+        n = len(days)
+        if n == 0:
+            weekday.append({"weekday": name, "days": 0, "avg_total": 0.0, "by_department": {d: 0.0 for d in depts}})
+            continue
+        sub = wd_pivot.reindex(days, fill_value=0.0)
+        weekday.append({
+            "weekday": name, "days": n, "avg_total": round(float(active.loc[days].sum()) / n, 2),
+            "by_department": {d: round(float(sub[d].sum()) / n, 2) if d in sub.columns else 0.0 for d in depts},
+        })
+
+    # --- top items per department
+    items: dict[str, list[dict[str, Any]]] = {}
+    for d in depts:
+        sub = consumed[consumed["dept"] == d]
+        gi = _group_items(sub)
+        dt = _sum(sub, "amount")
+        items[d] = [
+            {"item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group, "uom": r.uom, "qty": round(float(r.qty), 3),
+             "amount": round(float(r.amount), 2), "rate": round(float(r.rate), 2), "entries": int(r.entries), "share_pct": _share(float(r.amount), dt)}
+            for r in gi.head(limit).itertuples()
+        ]
+
+    # --- every production entry: what each batch used and what it produced
+    prod_by_parent = None
+    if not produced.empty:
+        prod_by_parent = produced.groupby("parent").agg(produced_value=("amount", "sum"), produced_qty=("qty", "sum"), produced_items=("item_code", "nunique"))
+    ge = consumed.groupby(["parent", "dept"], as_index=False).agg(
+        date=("date", "first"), purpose=("purpose", "first"), amount=("amount", "sum"), qty=("qty", "sum"), items=("item_code", "nunique"),
+    ).sort_values(["date", "parent"], ascending=[False, False])
+    entries = []
+    for r in ge.head(ENTRY_LIMIT).itertuples():
+        pv = pq = 0.0
+        pi_n = 0
+        if prod_by_parent is not None and r.parent in prod_by_parent.index:
+            p = prod_by_parent.loc[r.parent]
+            pv, pq, pi_n = float(p["produced_value"]), float(p["produced_qty"]), int(p["produced_items"])
+        entries.append({
+            "name": r.parent, "date": r.date.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[r.date.weekday()], "purpose": r.purpose, "department": r.dept,
+            "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3), "items": int(r.items),
+            "produced_value": round(pv, 2), "produced_qty": round(pq, 3), "produced_items": pi_n,
+            "yield_pct": round(pv / float(r.amount) * 100, 1) if r.amount else None,
+        })
+    return {
+        **empty, "total": round(total, 2), "departments": summary, "daily": daily, "weekday": weekday, "items": items,
+        "entries": entries, "entries_total": int(len(ge)),
+    }
+
+
+# ------------------------------------------------------------------ production (finished goods) detail
+
+def _dept_of_entry(consumed: pd.DataFrame) -> pd.Series:
+    """Stock Entry name -> producing department (the department its materials were issued from)."""
+    if consumed.empty:
+        return pd.Series(dtype=object)
+    return consumed.assign(dept=consumed["warehouse"].map(outlet_label)).groupby("parent")["dept"].first()
+
+
+def _product_rows(df: pd.DataFrame, total: float, prev: pd.DataFrame | None, limit: int) -> list[dict[str, Any]]:
+    """Top products by value with the change vs the previous window."""
+    g = _group_items(df)
+    prev_map: dict[str, tuple[float, float]] = {}
+    if prev is not None and not prev.empty:
+        prev_map = {r.item_code: (float(r.amount), float(r.qty)) for r in _group_items(prev).itertuples()}
+    out = []
+    for r in g.head(limit).itertuples():
+        p_val, p_qty = prev_map.get(r.item_code, (0.0, 0.0))
+        out.append({
+            "item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group, "uom": r.uom,
+            "qty": round(float(r.qty), 3), "amount": round(float(r.amount), 2), "rate": round(float(r.rate), 2),
+            "entries": int(r.entries), "share_pct": _share(float(r.amount), total),
+            "prev_amount": round(p_val, 2), "delta_pct": _pct(float(r.amount), p_val),
+            "prev_qty": round(p_qty, 3), "qty_delta_pct": _pct(float(r.qty), p_qty),
+        })
+    return out
+
+
+async def production(rng: DateRange, limit: int = 15, refresh: bool = False, weekdays: str | None = None) -> dict[str, Any]:
+    """Finished goods produced in detail: per producing department vs the previous window, day-by-day
+    (or month) matrix, weekday averages, top products (overall and per department) and every production entry."""
+    prev = rng.previous()
+    sel = weekday_set(weekdays)
+    se, se_prev = await asyncio.gather(_production_frame(rng, refresh), _production_frame(prev))
+    se, se_prev = _only_weekdays(se, sel), _only_weekdays(se_prev, sel)
+    empty = {"source": "stock_entry", "range": rng.as_dict(), "previous_range": prev.as_dict(), "granularity": rng.granularity,
+             "weekdays": sorted(WEEKDAYS[i] for i in sel) if sel else [],
+             "total": 0.0, "total_qty": 0.0, "distinct_items": 0, "departments": [], "daily": [], "weekday": [],
+             "items": [], "items_by_department": {}, "entries": [], "entries_total": 0}
+    if se.empty:
+        return empty
+    produced = se[se["kind"] == "produced"].copy()
+    if produced.empty:
+        return empty
+    consumed = se[se["kind"] == "consumed"]
+    produced["dept"] = produced["parent"].map(_dept_of_entry(consumed)).fillna("Unassigned")
+    total = _sum(produced, "amount")
+    days_in_range = _days(rng, sel)
+
+    prev_p = se_prev[se_prev["kind"] == "produced"].copy() if not se_prev.empty else se_prev
+    prev_map: dict[str, float] = {}
+    if not prev_p.empty:
+        prev_p["dept"] = prev_p["parent"].map(_dept_of_entry(se_prev[se_prev["kind"] == "consumed"])).fillna("Unassigned")
+        prev_map = {str(k): float(v) for k, v in prev_p.groupby("dept")["amount"].sum().items()}
+
+    g = produced.groupby("dept", as_index=False).agg(
+        amount=("amount", "sum"), qty=("qty", "sum"), entries=("parent", "nunique"), items=("item_code", "nunique"),
+        active_days=("date", lambda s: s.dt.normalize().nunique()),
+    ).sort_values("amount", ascending=False)
+    depts = [str(d) for d in g["dept"]]
+    summary = [
+        {"department": r.dept, "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3), "entries": int(r.entries), "items": int(r.items),
+         "active_days": int(r.active_days), "share_pct": _share(float(r.amount), total),
+         "avg_per_active_day": round(float(r.amount) / int(r.active_days), 2) if r.active_days else 0.0,
+         "prev_amount": round(prev_map.get(r.dept, 0.0), 2), "delta_pct": _pct(float(r.amount), prev_map.get(r.dept, 0.0))}
+        for r in g.itertuples()
+    ]
+
+    by_day = produced["date"].dt.normalize()
+    pivot = produced.pivot_table(index=by_day, columns="dept", values="amount", aggfunc="sum", fill_value=0.0)
+    pivot = pivot.reindex(days_in_range, fill_value=0.0).reindex(columns=depts, fill_value=0.0)
+    qty_day = produced.groupby(by_day)["qty"].sum().reindex(days_in_range, fill_value=0.0)
+    entries_day = produced.groupby(by_day)["parent"].nunique().reindex(days_in_range, fill_value=0)
+    if rng.granularity == "month":
+        key = pivot.index.to_period("M")
+        pivot = pivot.groupby(key).sum()
+        pivot.index = pivot.index.to_timestamp()
+        qty_day = qty_day.groupby(qty_day.index.to_period("M")).sum()
+        qty_day.index = qty_day.index.to_timestamp()
+        entries_day = entries_day.groupby(entries_day.index.to_period("M")).sum()
+        entries_day.index = entries_day.index.to_timestamp()
+    daily = [
+        {"period": d.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[d.weekday()], "total": round(float(row.sum()), 2),
+         "qty": round(float(qty_day.get(d, 0.0)), 3), "entries": int(entries_day.get(d, 0)),
+         "by_department": {k: round(float(v), 2) for k, v in row.items()}}
+        for d, row in pivot.iterrows()
+    ]
+
+    day_tot = produced.groupby(by_day)["amount"].sum()
+    active = day_tot[day_tot > 0]
+    wd_pivot = produced.pivot_table(index=by_day, columns="dept", values="amount", aggfunc="sum", fill_value=0.0)
+    weekday = []
+    for i, name in enumerate(WEEKDAYS):
+        days = [d for d in active.index if d.weekday() == i]
+        n = len(days)
+        if n == 0:
+            weekday.append({"weekday": name, "days": 0, "avg_total": 0.0, "by_department": {d: 0.0 for d in depts}})
+            continue
+        sub = wd_pivot.reindex(days, fill_value=0.0)
+        weekday.append({
+            "weekday": name, "days": n, "avg_total": round(float(active.loc[days].sum()) / n, 2),
+            "by_department": {d: round(float(sub[d].sum()) / n, 2) if d in sub.columns else 0.0 for d in depts},
+        })
+
+    items = _product_rows(produced, total, prev_p, limit)
+    items_by_department = {
+        d: _product_rows(produced[produced["dept"] == d], _sum(produced[produced["dept"] == d], "amount"),
+                         prev_p[prev_p["dept"] == d] if not prev_p.empty else None, limit)
+        for d in depts
+    }
+
+    used_by_parent = consumed.groupby("parent").agg(used=("amount", "sum"), materials=("item_code", "nunique")) if not consumed.empty else None
+    ge = produced.groupby("parent", as_index=False).agg(
+        date=("date", "first"), purpose=("purpose", "first"), dept=("dept", "first"), amount=("amount", "sum"), qty=("qty", "sum"), items=("item_code", "nunique"),
+    ).sort_values(["date", "parent"], ascending=[False, False])
+    top_products: dict[str, list[str]] = {}
+    for parent, sub in produced.sort_values("amount", ascending=False).groupby("parent"):
+        top_products[str(parent)] = [f"{r.item_name} ×{num_fmt(r.qty)}" for r in sub.head(3).itertuples()]
+    entries = []
+    for r in ge.head(ENTRY_LIMIT).itertuples():
+        used = materials = 0.0
+        if used_by_parent is not None and r.parent in used_by_parent.index:
+            u = used_by_parent.loc[r.parent]
+            used, materials = float(u["used"]), int(u["materials"])
+        entries.append({
+            "name": r.parent, "date": r.date.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[r.date.weekday()], "purpose": r.purpose, "department": r.dept,
+            "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3), "items": int(r.items),
+            "used": round(used, 2), "materials": int(materials),
+            "yield_pct": round(float(r.amount) / used * 100, 1) if used else None,
+            "top_products": top_products.get(r.parent, []),
+        })
+    return {
+        **empty, "total": round(total, 2), "total_qty": round(_sum(produced, "qty"), 3), "distinct_items": _nunique(produced, "item_code"),
+        "departments": summary, "daily": daily, "weekday": weekday, "items": items, "items_by_department": items_by_department,
+        "entries": entries, "entries_total": int(len(ge)),
+    }
+
+
+def num_fmt(v: float) -> str:
+    """7.0 -> '7', 2.5 -> '2.5' (for the short product list on an entry)."""
+    f = float(v)
+    return str(int(f)) if f.is_integer() else f"{f:g}"
+
+
+# ------------------------------------------------------------------ purchases / consumption / output detail
+
+FLOW_METRICS = (
+    ("purchased", "Raw material purchased"), ("purchased_all", "All purchases"),
+    ("consumed", "Material consumed"), ("produced", "Finished goods produced"),
+)
+
+
+def _day_series(df: pd.DataFrame, mask: pd.Series | None, days: pd.DatetimeIndex, col: str = "amount") -> pd.Series:
+    if df.empty:
+        return pd.Series(0.0, index=days)
+    d = df if mask is None else df[mask]
+    return d.groupby(d["date"].dt.normalize())[col].sum().reindex(days, fill_value=0.0)
+
+
+def _day_count(df: pd.DataFrame, mask: pd.Series | None, days: pd.DatetimeIndex) -> pd.Series:
+    if df.empty:
+        return pd.Series(0, index=days)
+    d = df if mask is None else df[mask]
+    return d.groupby(d["date"].dt.normalize())["parent"].nunique().reindex(days, fill_value=0)
+
+
+def _flow_frame(pi: pd.DataFrame, se: pd.DataFrame, rng: DateRange, sel: set[int] | None = None) -> pd.DataFrame:
+    """One row per calendar day (of the selected weekdays): purchased (raw), purchased_all, consumed, produced, invoices, entries."""
+    days = _days(rng, sel)
+    out = pd.DataFrame({"date": days})
+    out["purchased"] = _day_series(pi, pi["item_group"] == RAW if not pi.empty else None, days).values
+    out["purchased_all"] = _day_series(pi, None, days).values
+    out["consumed"] = _day_series(se, se["kind"] == "consumed" if not se.empty else None, days).values
+    out["produced"] = _day_series(se, se["kind"] == "produced" if not se.empty else None, days).values
+    out["invoices"] = _day_count(pi, None, days).values
+    out["entries"] = _day_count(se, se["kind"] == "consumed" if not se.empty else None, days).values
+    return out
+
+
+def _flow_summary(cur: pd.DataFrame, prev: pd.DataFrame) -> list[dict[str, Any]]:
+    rows = []
+    for key, label in FLOW_METRICS:
+        total = float(cur[key].sum())
+        active = int((cur[key] > 0).sum())
+        count_col = "invoices" if key.startswith("purchased") else "entries"
+        rows.append({
+            "key": key, "label": label, "total": round(total, 2), "active_days": active,
+            "avg_per_active_day": round(total / active, 2) if active else 0.0,
+            "avg_per_day": round(total / len(cur), 2) if len(cur) else 0.0,
+            "documents": int(cur.loc[cur[key] > 0, count_col].sum()) if active else 0,
+            "prev_total": round(float(prev[key].sum()), 2), "delta_pct": _pct(total, float(prev[key].sum())),
+        })
+    return rows
+
+
+async def flow(rng: DateRange, refresh: bool = False, weekdays: str | None = None) -> dict[str, Any]:
+    """Purchases, consumption and output in detail: per metric summary vs the previous window, day-by-day
+    (or month) table with running totals, weekday averages, and every purchase invoice in the range."""
+    prev = rng.previous()
+    sel = weekday_set(weekdays)
+    pi, pi_prev, se, se_prev = await asyncio.gather(
+        _purchase_frame(rng, refresh), _purchase_frame(prev), _production_frame(rng, refresh), _production_frame(prev),
+    )
+    pi, pi_prev, se, se_prev = (_only_weekdays(x, sel) for x in (pi, pi_prev, se, se_prev))
+    cur = _flow_frame(pi, se, rng, sel)
+    before = _flow_frame(pi_prev, se_prev, prev, sel)
+    summary = _flow_summary(cur, before)
+    tot = {k: float(cur[k].sum()) for k, _ in FLOW_METRICS}
+    ptot = {k: float(before[k].sum()) for k, _ in FLOW_METRICS}
+    ratios = {
+        "gap": round(tot["purchased"] - tot["consumed"], 2),
+        "prev_gap": round(ptot["purchased"] - ptot["consumed"], 2),
+        "yield_pct": round(tot["produced"] / tot["consumed"] * 100, 1) if tot["consumed"] else None,
+        "prev_yield_pct": round(ptot["produced"] / ptot["consumed"] * 100, 1) if ptot["consumed"] else None,
+        "consumed_pct_of_purchased": round(tot["consumed"] / tot["purchased"] * 100, 1) if tot["purchased"] else None,
+    }
+
+    # --- day-by-day (or month) with running totals
+    table = cur.copy()
+    if rng.granularity == "month":
+        g = table.groupby(table["date"].dt.to_period("M")).agg(
+            purchased=("purchased", "sum"), purchased_all=("purchased_all", "sum"), consumed=("consumed", "sum"),
+            produced=("produced", "sum"), invoices=("invoices", "sum"), entries=("entries", "sum"),
+        ).reset_index()
+        g["date"] = g["date"].dt.to_timestamp()
+        table = g
+    for k in ("purchased", "consumed", "produced"):
+        table[f"cum_{k}"] = table[k].cumsum()
+    daily = [
+        {
+            "period": r.date.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[r.date.weekday()],
+            "purchased": round(float(r.purchased), 2), "purchased_all": round(float(r.purchased_all), 2),
+            "consumed": round(float(r.consumed), 2), "produced": round(float(r.produced), 2),
+            "invoices": int(r.invoices), "entries": int(r.entries),
+            "gap": round(float(r.purchased) - float(r.consumed), 2),
+            "yield_pct": round(float(r.produced) / float(r.consumed) * 100, 1) if r.consumed else None,
+            "cum_purchased": round(float(r.cum_purchased), 2), "cum_consumed": round(float(r.cum_consumed), 2),
+            "cum_produced": round(float(r.cum_produced), 2), "cum_gap": round(float(r.cum_purchased) - float(r.cum_consumed), 2),
+        }
+        for r in table.itertuples()
+    ]
+
+    # --- weekday pattern: average per calendar day of that weekday (zero days count), plus how many were active
+    wd = cur["date"].dt.weekday
+    weekday = []
+    for i, name in enumerate(WEEKDAYS):
+        sub = cur[wd == i]
+        n = int(len(sub))
+        weekday.append({
+            "weekday": name, "days": n,
+            "purchased": round(float(sub["purchased"].sum()) / n, 2) if n else 0.0,
+            "consumed": round(float(sub["consumed"].sum()) / n, 2) if n else 0.0,
+            "produced": round(float(sub["produced"].sum()) / n, 2) if n else 0.0,
+            "purchase_days": int((sub["purchased_all"] > 0).sum()), "production_days": int((sub["consumed"] > 0).sum()),
+        })
+
+    # --- every purchase invoice in the range
+    invoices: list[dict[str, Any]] = []
+    total_invoices = 0
+    if not pi.empty:
+        raw_amt = pi.assign(raw=pi["amount"].where(pi["item_group"] == RAW, 0.0))
+        gi = raw_amt.groupby("parent", as_index=False).agg(
+            date=("date", "first"), supplier=("supplier", "first"), total=("amount", "sum"), raw=("raw", "sum"),
+            items=("item_code", "nunique"), groups=("item_group", lambda s: ", ".join(sorted(set(s)))),
+        ).sort_values(["date", "parent"], ascending=[False, False])
+        total_invoices = int(len(gi))
+        invoices = [
+            {"name": r.parent, "date": r.date.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[r.date.weekday()], "supplier": str(r.supplier).strip(),
+             "total": round(float(r.total), 2), "raw": round(float(r.raw), 2), "other": round(float(r.total) - float(r.raw), 2),
+             "items": int(r.items), "groups": r.groups}
+            for r in gi.head(ENTRY_LIMIT).itertuples()
+        ]
+
+    return {
+        "source": "stock_entry", "range": rng.as_dict(), "previous_range": prev.as_dict(), "granularity": rng.granularity,
+        "weekdays": sorted(WEEKDAYS[i] for i in sel) if sel else [],
+        "summary": summary, "ratios": ratios, "daily": daily, "weekday": weekday,
+        "invoices": invoices, "invoices_total": total_invoices,
     }

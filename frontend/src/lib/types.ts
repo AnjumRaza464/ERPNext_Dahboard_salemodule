@@ -693,3 +693,176 @@ export interface CostingStock extends Base {
   other_value: number;
   groups: { item_group: string; value: number; items: number }[];
 }
+
+export interface DepartmentSummary {
+  department: string;
+  amount: number;
+  qty: number;
+  entries: number;
+  items: number;
+  active_days: number;
+  share_pct: number;
+  avg_per_active_day: number;
+  prev_amount: number;
+  delta_pct: number | null;
+}
+
+export interface DepartmentDayRow {
+  period: string;
+  weekday: string;
+  total: number;
+  entries: number;
+  by_department: Record<string, number>;
+}
+
+export interface DepartmentWeekdayRow {
+  weekday: string;
+  /** days of that weekday with any production */
+  days: number;
+  avg_total: number;
+  by_department: Record<string, number>;
+}
+
+export interface ProductionEntry {
+  name: string;
+  date: string;
+  weekday: string;
+  purpose: string;
+  department: string;
+  amount: number;
+  qty: number;
+  items: number;
+  produced_value: number;
+  produced_qty: number;
+  produced_items: number;
+  yield_pct: number | null;
+}
+
+/** Department-wise consumption detail (production Stock Entries). */
+export interface CostingDepartments extends Base {
+  previous_range: Range;
+  granularity: "day" | "month";
+  /** weekday filter that was applied (empty = all days) */
+  weekdays: string[];
+  total: number;
+  departments: DepartmentSummary[];
+  daily: DepartmentDayRow[];
+  weekday: DepartmentWeekdayRow[];
+  /** top items per department */
+  items: Record<string, ProducedItem[]>;
+  entries: ProductionEntry[];
+  entries_total: number;
+}
+
+export interface ProductRow extends ProducedItem {
+  prev_amount: number;
+  delta_pct: number | null;
+  prev_qty: number;
+  qty_delta_pct: number | null;
+}
+
+export interface ProductionDayRow extends DepartmentDayRow {
+  qty: number;
+}
+
+export interface ProductionEntryRow {
+  name: string;
+  date: string;
+  weekday: string;
+  purpose: string;
+  department: string;
+  /** finished goods value booked */
+  amount: number;
+  qty: number;
+  /** distinct products */
+  items: number;
+  /** material value used by the same entry */
+  used: number;
+  materials: number;
+  yield_pct: number | null;
+  top_products: string[];
+}
+
+/** Finished goods produced in detail (production Stock Entries). */
+export interface CostingProduction extends Base {
+  previous_range: Range;
+  granularity: "day" | "month";
+  /** weekday filter that was applied (empty = all days) */
+  weekdays: string[];
+  total: number;
+  total_qty: number;
+  distinct_items: number;
+  departments: DepartmentSummary[];
+  daily: ProductionDayRow[];
+  weekday: DepartmentWeekdayRow[];
+  items: ProductRow[];
+  items_by_department: Record<string, ProductRow[]>;
+  entries: ProductionEntryRow[];
+  entries_total: number;
+}
+
+export interface FlowMetric {
+  key: "purchased" | "purchased_all" | "consumed" | "produced";
+  label: string;
+  total: number;
+  active_days: number;
+  avg_per_active_day: number;
+  avg_per_day: number;
+  /** invoices (purchases) or production entries */
+  documents: number;
+  prev_total: number;
+  delta_pct: number | null;
+}
+
+export interface FlowDayRow {
+  period: string;
+  weekday: string;
+  purchased: number;
+  purchased_all: number;
+  consumed: number;
+  produced: number;
+  invoices: number;
+  entries: number;
+  gap: number;
+  yield_pct: number | null;
+  cum_purchased: number;
+  cum_consumed: number;
+  cum_produced: number;
+  cum_gap: number;
+}
+
+export interface FlowWeekdayRow {
+  weekday: string;
+  days: number;
+  purchased: number;
+  consumed: number;
+  produced: number;
+  purchase_days: number;
+  production_days: number;
+}
+
+export interface PurchaseInvoiceRow {
+  name: string;
+  date: string;
+  weekday: string;
+  supplier: string;
+  total: number;
+  raw: number;
+  other: number;
+  items: number;
+  groups: string;
+}
+
+/** Purchases, consumption and output in detail. */
+export interface CostingFlow extends Base {
+  previous_range: Range;
+  granularity: "day" | "month";
+  /** weekday filter that was applied (empty = all days) */
+  weekdays: string[];
+  summary: FlowMetric[];
+  ratios: { gap: number; prev_gap: number; yield_pct: number | null; prev_yield_pct: number | null; consumed_pct_of_purchased: number | null };
+  daily: FlowDayRow[];
+  weekday: FlowWeekdayRow[];
+  invoices: PurchaseInvoiceRow[];
+  invoices_total: number;
+}
