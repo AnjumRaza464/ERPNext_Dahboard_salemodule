@@ -11,7 +11,7 @@ export default function ExportButtons({ onExport }: { onExport: (fmt: ExportForm
       <button onClick={() => onExport("csv")} className={cls} title="Download this table as CSV">
         CSV
       </button>
-      <button onClick={() => onExport("xlsx")} className={cls} title="Download this table as an Excel workbook (.xlsx)">
+      <button onClick={() => onExport("xlsx")} className={cls} title="Download as a styled Excel workbook (.xlsx); on detail cards every view gets its own tab">
         Excel
       </button>
     </div>

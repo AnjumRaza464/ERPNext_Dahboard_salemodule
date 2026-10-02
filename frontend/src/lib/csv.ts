@@ -30,17 +30,11 @@ export function downloadCsv(filename: string, csv: string): void {
 
 export type ExportFormat = "csv" | "xlsx";
 
-/** Same rows and columns as the CSV, written as a real .xlsx workbook (SheetJS is loaded on demand). */
+/** Same rows and columns as the CSV, as one styled worksheet (exceljs is loaded on demand). */
 export async function downloadXlsx<T>(filename: string, rows: T[], columns: CsvColumn<T>[]): Promise<void> {
-  const XLSX = await import("xlsx");
-  const aoa: (string | number | null)[][] = [columns.map((c) => c.header), ...rows.map((r) => columns.map((c) => c.value(r) ?? null))];
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = columns.map((c) => ({
-    wch: Math.min(40, Math.max(c.header.length + 2, ...rows.slice(0, 200).map((r) => String(c.value(r) ?? "").length + 2))),
-  }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Data");
-  XLSX.writeFile(wb, filename);
+  const { downloadWorkbook } = await import("./excel");
+  const title = filename.replace(/\.xlsx$/i, "").replace(/[-_]+/g, " ");
+  await downloadWorkbook(filename, [{ name: "Data", title, columns, rows, totals: true }]);
 }
 
 /** Download a table as CSV or Excel; `baseName` may carry a .csv suffix, the right extension is applied. */
