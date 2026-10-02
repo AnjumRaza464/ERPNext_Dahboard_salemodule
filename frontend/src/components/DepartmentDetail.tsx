@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { useApi } from "@/hooks/useApi";
-import { exportTable, type ExportFormat } from "@/lib/csv";
+import { exportTable, type CsvColumn, type ExportFormat } from "@/lib/csv";
+import { downloadWorkbook } from "@/lib/excel";
 import ExportButtons from "./ExportButtons";
 import { fmtDate, fmtPeriod, fmtRange, num, pkr } from "@/lib/format";
-import type { CostingDepartments, Range } from "@/lib/types";
+import type { CostingDepartments, DepartmentDayRow, DepartmentSummary, DepartmentWeekdayRow, ProducedItem, ProductionEntry, Range } from "@/lib/types";
 import Card from "./Card";
 import DeltaText from "./DeltaText";
 import StackedColumns from "./charts/StackedColumns";
@@ -66,48 +67,79 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
   const keys = depts.map(short);
   const tickEvery = dayRows.length > 40 ? 4 : dayRows.length > 20 ? 2 : 1;
 
-  const exportDaily = (fmt: ExportFormat) => {
-    if (!d) return;
-    exportTable(fmt, `department-consumption-daily-${range.start}-${range.end}.csv`, d.daily, [
-        { key: "period", header: gran === "month" ? "Month" : "Date", value: (r) => r.period },
-        { key: "weekday", header: "Weekday", value: (r) => r.weekday },
-        ...depts.map((k) => ({ key: k, header: k, value: (r: (typeof d.daily)[number]) => r.by_department[k] ?? 0 })),
-        { key: "total", header: "Total", value: (r) => r.total },
-        { key: "entries", header: "Entries", value: (r) => r.entries },
-      ]);
-  };
-  const exportEntries = (fmt: ExportFormat) => {
-    if (!d) return;
-    exportTable(fmt, `production-entries-${range.start}-${range.end}.csv`, d.entries, [
-        { key: "date", header: "Date", value: (r) => r.date },
-        { key: "weekday", header: "Weekday", value: (r) => r.weekday },
-        { key: "name", header: "Entry", value: (r) => r.name },
-        { key: "department", header: "Department", value: (r) => r.department },
-        { key: "amount", header: "Material used", value: (r) => r.amount },
-        { key: "qty", header: "Qty used", value: (r) => r.qty },
-        { key: "items", header: "Materials", value: (r) => r.items },
-        { key: "produced_value", header: "Produced value", value: (r) => r.produced_value },
-        { key: "produced_qty", header: "Produced qty", value: (r) => r.produced_qty },
-        { key: "produced_items", header: "Products", value: (r) => r.produced_items },
-        { key: "yield", header: "Output per 100", value: (r) => r.yield_pct },
-      ]);
-  };
-  const exportItems = (fmt: ExportFormat) => {
-    if (!d || !activeDept) return;
-    exportTable(fmt, `${short(activeDept).toLowerCase()}-materials-${range.start}-${range.end}.csv`, shownItems, [
-        { key: "item_code", header: "Item code", value: (r) => r.item_code },
-        { key: "item_name", header: "Item", value: (r) => r.item_name },
-        { key: "item_group", header: "Group", value: (r) => r.item_group },
-        { key: "qty", header: "Qty", value: (r) => r.qty },
-        { key: "uom", header: "UOM", value: (r) => r.uom },
-        { key: "rate", header: "Avg rate", value: (r) => r.rate },
-        { key: "amount", header: "Amount", value: (r) => r.amount },
-        { key: "share", header: "Share %", value: (r) => r.share_pct },
-        { key: "entries", header: "Entries", value: (r) => r.entries },
-      ]);
-  };
+  const dailyCols: CsvColumn<DepartmentDayRow>[] = [
+    { key: "period", header: gran === "month" ? "Month" : "Date", value: (r) => r.period },
+    { key: "weekday", header: "Weekday", value: (r) => r.weekday },
+    ...depts.map((k) => ({ key: k, header: `${k} (PKR)`, value: (r: DepartmentDayRow) => r.by_department[k] ?? 0 })),
+    { key: "total", header: "Total (PKR)", value: (r) => r.total },
+    { key: "entries", header: "Entries", value: (r) => r.entries },
+  ];
+  const weekdayCols: CsvColumn<DepartmentWeekdayRow>[] = [
+    { key: "weekday", header: "Weekday", value: (r) => r.weekday },
+    { key: "days", header: "Din with production", value: (r) => r.days },
+    ...depts.map((k) => ({ key: k, header: `${k} avg (PKR)`, value: (r: DepartmentWeekdayRow) => r.by_department[k] ?? 0 })),
+    { key: "avg_total", header: "Avg total (PKR)", value: (r) => r.avg_total },
+  ];
+  const summaryCols: CsvColumn<DepartmentSummary>[] = [
+    { key: "department", header: "Department", value: (r) => r.department },
+    { key: "amount", header: "Used (PKR)", value: (r) => r.amount },
+    { key: "share", header: "Share %", value: (r) => r.share_pct },
+    { key: "entries", header: "Entries", value: (r) => r.entries },
+    { key: "items", header: "Materials", value: (r) => r.items },
+    { key: "active_days", header: "Active din", value: (r) => r.active_days },
+    { key: "avg", header: "Avg per active din (PKR)", value: (r) => r.avg_per_active_day },
+    { key: "prev", header: "Previous (PKR)", value: (r) => r.prev_amount },
+    { key: "delta", header: "Change %", value: (r) => r.delta_pct },
+  ];
+  const itemCols: CsvColumn<ProducedItem>[] = [
+    { key: "item_code", header: "Item code", value: (r) => r.item_code },
+    { key: "item_name", header: "Item", value: (r) => r.item_name },
+    { key: "item_group", header: "Group", value: (r) => r.item_group },
+    { key: "qty", header: "Qty", value: (r) => r.qty },
+    { key: "uom", header: "UOM", value: (r) => r.uom },
+    { key: "rate", header: "Avg rate", value: (r) => r.rate },
+    { key: "amount", header: "Amount (PKR)", value: (r) => r.amount },
+    { key: "share", header: "Share of dept %", value: (r) => r.share_pct },
+    { key: "entries", header: "Entries", value: (r) => r.entries },
+  ];
+  const materialCols: CsvColumn<ProducedItem & { department: string }>[] = [{ key: "department", header: "Department", value: (r) => r.department }, ...itemCols];
+  const entryCols: CsvColumn<ProductionEntry>[] = [
+    { key: "date", header: "Date", value: (r) => r.date },
+    { key: "weekday", header: "Weekday", value: (r) => r.weekday },
+    { key: "name", header: "Entry", value: (r) => r.name },
+    { key: "department", header: "Department", value: (r) => r.department },
+    { key: "amount", header: "Material used (PKR)", value: (r) => r.amount },
+    { key: "qty", header: "Qty used", value: (r) => r.qty },
+    { key: "items", header: "Materials", value: (r) => r.items },
+    { key: "produced_value", header: "Produced value (PKR)", value: (r) => r.produced_value },
+    { key: "produced_qty", header: "Produced qty", value: (r) => r.produced_qty },
+    { key: "produced_items", header: "Products", value: (r) => r.produced_items },
+    { key: "yield", header: "Output per 100", value: (r) => r.yield_pct },
+  ];
+  const stem = `${range.start}-${range.end}`;
+  const scope = `${fmtRange(range.start, range.end)}${days.length ? ` · ${days.join(", ")} only` : ""}`;
 
-  const csv = view === "daily" ? exportDaily : view === "entries" ? exportEntries : view === "items" ? exportItems : null;
+  /** CSV of the view on screen. */
+  const exportView = () => {
+    if (!d) return;
+    if (view === "daily") exportTable("csv", `department-consumption-daily-${stem}`, d.daily, dailyCols);
+    else if (view === "weekday") exportTable("csv", `department-consumption-weekday-${stem}`, d.weekday, weekdayCols);
+    else if (view === "items" && activeDept) exportTable("csv", `${short(activeDept).toLowerCase()}-materials-${stem}`, shownItems, itemCols);
+    else exportTable("csv", `production-entries-${stem}`, d.entries, entryCols);
+  };
+  /** One Excel workbook with every view of this card on its own tab. */
+  const exportWorkbook = () => {
+    if (!d) return;
+    const materials = depts.flatMap((k) => (d.items[k] ?? []).map((r) => ({ ...r, department: k })));
+    void downloadWorkbook(`department-consumption-${stem}.xlsx`, [
+      { name: "Summary", title: "Department Consumption · Summary", subtitle: `${scope} · ${pkr(d.total)} used in ${num(d.entries_total)} production entries · change vs ${fmtRange(d.previous_range.start, d.previous_range.end)}`, columns: summaryCols, rows: d.departments, totals: true, noTotal: ["active_days"] },
+      { name: gran === "month" ? "Month-wise" : "Day-wise", title: `Department Consumption · ${gran === "month" ? "Month" : "Day"}-wise`, subtitle: `${scope} · material used per ${gran === "month" ? "month" : "day"} by department, PKR`, columns: dailyCols, rows: d.daily, totals: true },
+      { name: "Weekday", title: "Department Consumption · Weekday averages", subtitle: `${scope} · average per day of that weekday, production days only, PKR`, columns: weekdayCols, rows: d.weekday },
+      { name: "Materials", title: "Materials used by department", subtitle: `${scope} · every material, grouped by department`, columns: materialCols, rows: materials, totals: true },
+      { name: "Entries", title: "Production entries", subtitle: `${scope} · ${num(d.entries.length)} of ${num(d.entries_total)} entries, what each batch used and produced`, columns: entryCols, rows: d.entries, totals: true },
+    ]);
+  };
+  const onExport = (fmt: ExportFormat) => (fmt === "xlsx" ? exportWorkbook() : exportView());
 
   return (
     <Card
@@ -124,7 +156,7 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
       action={
         <div className="flex items-center gap-2">
           <ViewToggle value={view} options={[{ id: "daily", label: gran === "month" ? "Month-wise" : "Day-wise" }, { id: "weekday", label: "Weekday" }, { id: "items", label: "Materials" }, { id: "entries", label: "Entries" }]} onChange={setView} />
-          {csv && d && <ExportButtons onExport={csv} />}
+          {d && <ExportButtons onExport={onExport} />}
         </div>
       }
     >

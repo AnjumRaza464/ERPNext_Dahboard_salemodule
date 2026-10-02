@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { useApi } from "@/hooks/useApi";
-import { exportTable, type ExportFormat } from "@/lib/csv";
+import { exportTable, type CsvColumn, type ExportFormat } from "@/lib/csv";
+import { downloadWorkbook } from "@/lib/excel";
 import ExportButtons from "./ExportButtons";
 import { fmtDate, fmtPeriod, fmtRange, num, pkr } from "@/lib/format";
-import type { CostingFlow, Range } from "@/lib/types";
+import type { CostingFlow, FlowDayRow, FlowMetric, FlowWeekdayRow, PurchaseInvoiceRow, Range } from "@/lib/types";
 import Card from "./Card";
 import DeltaText from "./DeltaText";
 import MultiLineChart from "./charts/MultiLineChart";
@@ -55,39 +56,73 @@ export default function FlowDetail({ range, refreshKey, onRetry }: Props) {
   const tickEvery = dayRows.length > 40 ? 4 : dayRows.length > 20 ? 2 : 1;
   const empty = !!d && d.summary.every((m) => m.total === 0);
 
-  const exportDaily = (fmt: ExportFormat) => {
+  const summaryCols: CsvColumn<FlowMetric>[] = [
+    { key: "label", header: "Metric", value: (r) => r.label },
+    { key: "total", header: "Total (PKR)", value: (r) => r.total },
+    { key: "documents", header: "Documents", value: (r) => r.documents },
+    { key: "active_days", header: "Active din", value: (r) => r.active_days },
+    { key: "avg_active", header: "Avg per active din (PKR)", value: (r) => r.avg_per_active_day },
+    { key: "avg_day", header: "Avg per calendar din (PKR)", value: (r) => r.avg_per_day },
+    { key: "prev", header: "Previous (PKR)", value: (r) => r.prev_total },
+    { key: "delta", header: "Change %", value: (r) => r.delta_pct },
+  ];
+  const dailyCols: CsvColumn<FlowDayRow>[] = [
+    { key: "period", header: gran === "month" ? "Month" : "Date", value: (r) => r.period },
+    { key: "weekday", header: "Weekday", value: (r) => r.weekday },
+    { key: "purchased", header: "Raw material purchased (PKR)", value: (r) => r.purchased },
+    { key: "purchased_all", header: "All purchases (PKR)", value: (r) => r.purchased_all },
+    { key: "consumed", header: "Material consumed (PKR)", value: (r) => r.consumed },
+    { key: "produced", header: "Finished goods produced (PKR)", value: (r) => r.produced },
+    { key: "gap", header: "Bought minus used (PKR)", value: (r) => r.gap },
+    { key: "yield", header: "Output per 100", value: (r) => r.yield_pct },
+    { key: "invoices", header: "Invoices", value: (r) => r.invoices },
+    { key: "entries", header: "Production entries", value: (r) => r.entries },
+    { key: "cum_purchased", header: "Running purchased (PKR)", value: (r) => r.cum_purchased },
+    { key: "cum_consumed", header: "Running consumed (PKR)", value: (r) => r.cum_consumed },
+    { key: "cum_produced", header: "Running produced (PKR)", value: (r) => r.cum_produced },
+  ];
+  const weekdayCols: CsvColumn<FlowWeekdayRow>[] = [
+    { key: "weekday", header: "Weekday", value: (r) => r.weekday },
+    { key: "days", header: "Din in range", value: (r) => r.days },
+    { key: "purchased", header: "Avg purchased raw (PKR)", value: (r) => r.purchased },
+    { key: "consumed", header: "Avg consumed (PKR)", value: (r) => r.consumed },
+    { key: "produced", header: "Avg produced (PKR)", value: (r) => r.produced },
+    { key: "purchase_days", header: "Din with purchases", value: (r) => r.purchase_days },
+    { key: "production_days", header: "Din with production", value: (r) => r.production_days },
+  ];
+  const invoiceCols: CsvColumn<PurchaseInvoiceRow>[] = [
+    { key: "date", header: "Date", value: (r) => r.date },
+    { key: "weekday", header: "Weekday", value: (r) => r.weekday },
+    { key: "name", header: "Invoice", value: (r) => r.name },
+    { key: "supplier", header: "Supplier", value: (r) => r.supplier },
+    { key: "raw", header: "Raw material (PKR)", value: (r) => r.raw },
+    { key: "other", header: "Other groups (PKR)", value: (r) => r.other },
+    { key: "total", header: "Total (PKR)", value: (r) => r.total },
+    { key: "items", header: "Items", value: (r) => r.items },
+    { key: "groups", header: "Item groups", value: (r) => r.groups },
+  ];
+  const stem = `${range.start}-${range.end}`;
+  const scope = `${fmtRange(range.start, range.end)}${days.length ? ` · ${days.join(", ")} only` : ""}`;
+
+  /** CSV of the view on screen. */
+  const exportView = () => {
     if (!d) return;
-    exportTable(fmt, `purchases-consumption-output-${range.start}-${range.end}.csv`, d.daily, [
-        { key: "period", header: gran === "month" ? "Month" : "Date", value: (r) => r.period },
-        { key: "weekday", header: "Weekday", value: (r) => r.weekday },
-        { key: "purchased", header: "Raw material purchased", value: (r) => r.purchased },
-        { key: "purchased_all", header: "All purchases", value: (r) => r.purchased_all },
-        { key: "consumed", header: "Material consumed", value: (r) => r.consumed },
-        { key: "produced", header: "Finished goods produced", value: (r) => r.produced },
-        { key: "gap", header: "Purchased - consumed", value: (r) => r.gap },
-        { key: "yield", header: "Output per 100", value: (r) => r.yield_pct },
-        { key: "invoices", header: "Invoices", value: (r) => r.invoices },
-        { key: "entries", header: "Production entries", value: (r) => r.entries },
-        { key: "cum_purchased", header: "Cumulative purchased", value: (r) => r.cum_purchased },
-        { key: "cum_consumed", header: "Cumulative consumed", value: (r) => r.cum_consumed },
-        { key: "cum_produced", header: "Cumulative produced", value: (r) => r.cum_produced },
-      ]);
+    if (view === "weekday") exportTable("csv", `purchases-consumption-output-weekday-${stem}`, d.weekday, weekdayCols);
+    else if (view === "invoices") exportTable("csv", `purchase-invoices-${stem}`, d.invoices, invoiceCols);
+    else exportTable("csv", `purchases-consumption-output-${stem}`, d.daily, dailyCols);
   };
-  const exportInvoices = (fmt: ExportFormat) => {
+  /** One Excel workbook with every view of this card on its own tab. */
+  const exportWorkbook = () => {
     if (!d) return;
-    exportTable(fmt, `purchase-invoices-${range.start}-${range.end}.csv`, d.invoices, [
-        { key: "date", header: "Date", value: (r) => r.date },
-        { key: "weekday", header: "Weekday", value: (r) => r.weekday },
-        { key: "name", header: "Invoice", value: (r) => r.name },
-        { key: "supplier", header: "Supplier", value: (r) => r.supplier },
-        { key: "raw", header: "Raw material", value: (r) => r.raw },
-        { key: "other", header: "Other groups", value: (r) => r.other },
-        { key: "total", header: "Total", value: (r) => r.total },
-        { key: "items", header: "Items", value: (r) => r.items },
-        { key: "groups", header: "Item groups", value: (r) => r.groups },
-      ]);
+    const ratios = `bought minus used ${pkr(d.ratios.gap, { sign: true })} (raw) · ${d.ratios.consumed_pct_of_purchased != null ? `${num(d.ratios.consumed_pct_of_purchased, 1)}% of raw purchases used` : "no raw purchases"} · output PKR ${d.ratios.yield_pct != null ? num(d.ratios.yield_pct, 0) : "—"} per PKR 100 material`;
+    void downloadWorkbook(`purchases-consumption-output-${stem}.xlsx`, [
+      { name: "Summary", title: "Purchases, Consumption & Output · Summary", subtitle: `${scope} · ${ratios} · change vs ${fmtRange(d.previous_range.start, d.previous_range.end)}`, columns: summaryCols, rows: d.summary },
+      { name: gran === "month" ? "Month-wise" : "Day-wise", title: `Purchases, Consumption & Output · ${gran === "month" ? "Month" : "Day"}-wise`, subtitle: `${scope} · PKR, with running totals from the first day of the range`, columns: dailyCols, rows: d.daily, totals: true, noTotal: ["cum_purchased", "cum_consumed", "cum_produced"] },
+      { name: "Weekday", title: "Purchases, Consumption & Output · Weekday averages", subtitle: `${scope} · average per calendar day of that weekday, PKR`, columns: weekdayCols, rows: d.weekday },
+      { name: "Invoices", title: "Purchase invoices", subtitle: `${scope} · ${num(d.invoices.length)} of ${num(d.invoices_total)} invoices`, columns: invoiceCols, rows: d.invoices, totals: true },
+    ]);
   };
-  const csv = view === "invoices" ? exportInvoices : view === "weekday" ? null : exportDaily;
+  const onExport = (fmt: ExportFormat) => (fmt === "xlsx" ? exportWorkbook() : exportView());
 
   return (
     <Card
@@ -108,7 +143,7 @@ export default function FlowDetail({ range, refreshKey, onRetry }: Props) {
       action={
         <div className="flex items-center gap-2">
           <ViewToggle value={view} options={[{ id: "daily", label: gran === "month" ? "Month-wise" : "Day-wise" }, { id: "cumulative", label: "Running total" }, { id: "weekday", label: "Weekday" }, { id: "invoices", label: "Invoices" }]} onChange={setView} />
-          {csv && d && <ExportButtons onExport={csv} />}
+          {d && <ExportButtons onExport={onExport} />}
         </div>
       }
     >
