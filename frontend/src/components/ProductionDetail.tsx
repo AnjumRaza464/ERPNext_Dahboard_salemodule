@@ -9,6 +9,7 @@ import type { CostingProduction, Range } from "@/lib/types";
 import Card from "./Card";
 import DeltaText from "./DeltaText";
 import StackedColumns from "./charts/StackedColumns";
+import TableFilter from "./TableFilter";
 import ViewToggle from "./ViewToggle";
 import WeekdayFilter from "./WeekdayFilter";
 
@@ -25,6 +26,12 @@ const th = "py-1.5 font-medium";
 const thead = "border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-3";
 const tdNum = "py-1.5 text-right text-ink-2";
 const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)", "var(--series-5)", "var(--series-6)"];
+
+/** Rows whose item name or code contains `query` (case-insensitive). */
+function matches(query: string) {
+  const q = query.trim().toLowerCase();
+  return (r: { item_name: string; item_code: string }) => !q || r.item_name.toLowerCase().includes(q) || r.item_code.toLowerCase().includes(q);
+}
 
 function short(dept: string): string {
   return dept.replace(/\s+Department$/i, "");
@@ -43,9 +50,10 @@ function yieldTone(v: number | null): string {
  */
 export default function ProductionDetail({ range, refreshKey, onRetry }: Props) {
   const [days, setDays] = useState<string[]>([]);
-  const q = useApi<CostingProduction>("/api/costing/production", range, refreshKey, { limit: 15, ...(days.length ? { weekdays: days.join(",") } : {}) });
+  const q = useApi<CostingProduction>("/api/costing/production", range, refreshKey, { limit: 0, ...(days.length ? { weekdays: days.join(",") } : {}) });
   const [view, setView] = useState<View>("daily");
   const [dept, setDept] = useState<string>(ALL);
+  const [productQuery, setProductQuery] = useState("");
   const d = q.data;
   const depts = d?.departments.map((x) => x.department) ?? [];
   const activeDept = dept !== ALL && depts.includes(dept) ? dept : ALL;
@@ -56,6 +64,7 @@ export default function ProductionDetail({ range, refreshKey, onRetry }: Props) 
   const weekdayRows = d ? d.weekday.map((r) => ({ label: r.weekday, days: r.days, total: r.avg_total, ...Object.fromEntries(depts.map((k) => [short(k), r.by_department[k] ?? 0])) })) : [];
   const tickEvery = dayRows.length > 40 ? 4 : dayRows.length > 20 ? 2 : 1;
   const products = d ? (activeDept === ALL ? d.items : d.items_by_department[activeDept] ?? []) : [];
+  const shownProducts = products.filter(matches(productQuery));
   const productsTotal = d ? (activeDept === ALL ? d.total : d.departments.find((x) => x.department === activeDept)?.amount ?? 0) : 0;
 
   const exportDaily = (fmt: ExportFormat) => {
@@ -71,7 +80,7 @@ export default function ProductionDetail({ range, refreshKey, onRetry }: Props) 
   };
   const exportProducts = (fmt: ExportFormat) => {
     if (!d) return;
-    exportTable(fmt, `finished-goods-${activeDept === ALL ? "all" : short(activeDept).toLowerCase()}-${range.start}-${range.end}.csv`, products, [
+    exportTable(fmt, `finished-goods-${activeDept === ALL ? "all" : short(activeDept).toLowerCase()}-${range.start}-${range.end}.csv`, shownProducts, [
         { key: "item_code", header: "Item code", value: (r) => r.item_code },
         { key: "item_name", header: "Product", value: (r) => r.item_name },
         { key: "qty", header: "Qty", value: (r) => r.qty },
@@ -244,12 +253,13 @@ export default function ProductionDetail({ range, refreshKey, onRetry }: Props) 
               <div className="flex flex-wrap items-center gap-3">
                 <ViewToggle value={activeDept} options={[{ id: ALL, label: "All" }, ...depts.map((k) => ({ id: k, label: short(k) }))]} onChange={setDept} />
                 <span className="text-xs text-ink-3">
-                  Top {num(products.length)} products{activeDept === ALL ? "" : ` from ${activeDept}`} · {pkr(productsTotal)} · qty and value vs the previous period
+                  All {num(products.length)} products{activeDept === ALL ? "" : ` from ${activeDept}`} · {pkr(productsTotal)} · qty and value vs the previous period
                 </span>
               </div>
-              <div className="overflow-x-auto">
+              <TableFilter query={productQuery} onQuery={setProductQuery} shown={shownProducts.length} total={products.length} placeholder="Search product or code…" />
+              <div className="max-h-[520px] overflow-auto">
                 <table className="w-full min-w-[760px] text-xs">
-                  <thead>
+                  <thead className="sticky top-0 z-10 bg-surface">
                     <tr className={thead}>
                       <th className={th}>Product</th>
                       <th className={`${th} text-right`}>Qty</th>
@@ -263,7 +273,7 @@ export default function ProductionDetail({ range, refreshKey, onRetry }: Props) 
                     </tr>
                   </thead>
                   <tbody className="tnum">
-                    {products.map((r) => (
+                    {shownProducts.map((r) => (
                       <tr key={r.item_code} className="border-b border-line/60">
                         <td className="py-1.5 text-ink" title={`${r.item_code} · ${r.item_group}`}>{r.item_name}</td>
                         <td className="py-1.5 text-right font-medium text-ink">{num(r.qty, 1)} <span className="font-normal text-ink-3">{r.uom}</span></td>

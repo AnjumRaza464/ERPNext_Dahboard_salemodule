@@ -58,7 +58,7 @@ async def costing_stock(
 
 @router.get("/departments")
 async def costing_departments(
-    rng: DateRange = Depends(date_range), limit: int = Query(default=10, ge=1, le=50), refresh: bool = False,
+    rng: DateRange = Depends(date_range), limit: int = Query(default=10, ge=0, le=1000, description="0 = every item"), refresh: bool = False,
     weekdays: str | None = Query(default=None, description="comma-separated weekday names to keep, e.g. Mon,Sat; empty = all"),
 ):
     """Department-wise consumption in detail: summary vs the previous window, day-by-day matrix, weekday averages,
@@ -69,7 +69,7 @@ async def costing_departments(
 
 @router.get("/production")
 async def costing_production(
-    rng: DateRange = Depends(date_range), limit: int = Query(default=15, ge=1, le=50), refresh: bool = False,
+    rng: DateRange = Depends(date_range), limit: int = Query(default=15, ge=0, le=1000, description="0 = every item"), refresh: bool = False,
     weekdays: str | None = Query(default=None, description="comma-separated weekday names to keep, e.g. Mon,Sat; empty = all"),
 ):
     """Finished goods produced in detail: per producing department vs the previous window, day-by-day matrix,

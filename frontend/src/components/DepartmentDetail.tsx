@@ -9,6 +9,7 @@ import type { CostingDepartments, Range } from "@/lib/types";
 import Card from "./Card";
 import DeltaText from "./DeltaText";
 import StackedColumns from "./charts/StackedColumns";
+import TableFilter from "./TableFilter";
 import ViewToggle from "./ViewToggle";
 import WeekdayFilter from "./WeekdayFilter";
 
@@ -24,6 +25,12 @@ const th = "py-1.5 font-medium";
 const thead = "border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-3";
 const tdNum = "py-1.5 text-right text-ink-2";
 const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)", "var(--series-4)", "var(--series-5)", "var(--series-6)"];
+
+/** Rows whose item name or code contains `query` (case-insensitive). */
+function matches(query: string) {
+  const q = query.trim().toLowerCase();
+  return (r: { item_name: string; item_code: string }) => !q || r.item_name.toLowerCase().includes(q) || r.item_code.toLowerCase().includes(q);
+}
 
 /** Short department label for chart legends and column headers ("Icing Department" -> "Icing"). */
 function short(dept: string): string {
@@ -43,13 +50,16 @@ function yieldTone(v: number | null): string {
  */
 export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) {
   const [days, setDays] = useState<string[]>([]);
-  const q = useApi<CostingDepartments>("/api/costing/departments", range, refreshKey, { limit: 10, ...(days.length ? { weekdays: days.join(",") } : {}) });
+  const q = useApi<CostingDepartments>("/api/costing/departments", range, refreshKey, { limit: 0, ...(days.length ? { weekdays: days.join(",") } : {}) });
   const [view, setView] = useState<View>("daily");
   const [dept, setDept] = useState<string | null>(null);
+  const [itemQuery, setItemQuery] = useState("");
   const d = q.data;
   const depts = d?.departments.map((x) => x.department) ?? [];
   const activeDept = dept && depts.includes(dept) ? dept : depts[0];
   const gran = d?.granularity ?? "day";
+  const deptItems = d && activeDept ? d.items[activeDept] ?? [] : [];
+  const shownItems = deptItems.filter(matches(itemQuery));
 
   const dayRows = d ? d.daily.map((r) => ({ label: fmtPeriod(r.period, gran), weekday: r.weekday, entries: r.entries, total: r.total, ...Object.fromEntries(depts.map((k) => [short(k), r.by_department[k] ?? 0])) })) : [];
   const weekdayRows = d ? d.weekday.map((r) => ({ label: r.weekday, days: r.days, total: r.avg_total, ...Object.fromEntries(depts.map((k) => [short(k), r.by_department[k] ?? 0])) })) : [];
@@ -84,7 +94,7 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
   };
   const exportItems = (fmt: ExportFormat) => {
     if (!d || !activeDept) return;
-    exportTable(fmt, `${short(activeDept).toLowerCase()}-materials-${range.start}-${range.end}.csv`, d.items[activeDept] ?? [], [
+    exportTable(fmt, `${short(activeDept).toLowerCase()}-materials-${range.start}-${range.end}.csv`, shownItems, [
         { key: "item_code", header: "Item code", value: (r) => r.item_code },
         { key: "item_name", header: "Item", value: (r) => r.item_name },
         { key: "item_group", header: "Group", value: (r) => r.item_group },
@@ -237,12 +247,13 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
               <div className="flex flex-wrap items-center gap-3">
                 <ViewToggle value={activeDept} options={depts.map((k) => ({ id: k, label: short(k) }))} onChange={setDept} />
                 <span className="text-xs text-ink-3">
-                  Top {num((d.items[activeDept] ?? []).length)} materials used in {activeDept} · {pkr(d.departments.find((x) => x.department === activeDept)?.amount)}
+                  All {num(deptItems.length)} materials used in {activeDept} · {pkr(d.departments.find((x) => x.department === activeDept)?.amount)}
                 </span>
               </div>
-              <div className="overflow-x-auto">
+              <TableFilter query={itemQuery} onQuery={setItemQuery} shown={shownItems.length} total={deptItems.length} placeholder="Search material or code…" />
+              <div className="max-h-[520px] overflow-auto">
                 <table className="w-full min-w-[640px] text-xs">
-                  <thead>
+                  <thead className="sticky top-0 z-10 bg-surface">
                     <tr className={thead}>
                       <th className={th}>Item</th>
                       <th className={th}>Group</th>
@@ -254,7 +265,7 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
                     </tr>
                   </thead>
                   <tbody className="tnum">
-                    {(d.items[activeDept] ?? []).map((r) => (
+                    {shownItems.map((r) => (
                       <tr key={r.item_code} className="border-b border-line/60">
                         <td className="py-1.5 text-ink" title={r.item_code}>{r.item_name}</td>
                         <td className="py-1.5 text-ink-3">{r.item_group}</td>
