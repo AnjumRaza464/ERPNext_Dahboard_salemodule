@@ -635,7 +635,7 @@ async def departments(rng: DateRange, limit: int = 10, refresh: bool = False, we
         items[d] = [
             {"item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group, "uom": r.uom, "qty": round(float(r.qty), 3),
              "amount": round(float(r.amount), 2), "rate": round(float(r.rate), 2), "entries": int(r.entries), "share_pct": _share(float(r.amount), dt)}
-            for r in gi.head(limit).itertuples()
+            for r in _head(gi, limit).itertuples()
         ]
 
     # --- every production entry: what each batch used and what it produced
@@ -680,7 +680,7 @@ def _product_rows(df: pd.DataFrame, total: float, prev: pd.DataFrame | None, lim
     if prev is not None and not prev.empty:
         prev_map = {r.item_code: (float(r.amount), float(r.qty)) for r in _group_items(prev).itertuples()}
     out = []
-    for r in g.head(limit).itertuples():
+    for r in _head(g, limit).itertuples():
         p_val, p_qty = prev_map.get(r.item_code, (0.0, 0.0))
         out.append({
             "item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group, "uom": r.uom,
