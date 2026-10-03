@@ -113,3 +113,11 @@ async def costing_adjustments(rng: DateRange = Depends(date_range), refresh: boo
     """Stock Reconciliation postings in the range: value added or written off per item and warehouse."""
     value, hit = await cached(f"costing:adjustments:{rng.key()}", lambda: costing.adjustments(rng, refresh=refresh), refresh=refresh)
     return _stamp(value, hit)
+
+
+@router.get("/summary")
+async def costing_summary(rng: DateRange = Depends(date_range), refresh: bool = False):
+    """The whole Costing tab in one payload: bought -> issued -> consumed -> produced -> sent to the outlet -> sold,
+    each step vs the previous window, per-department lines, key ratios and stock."""
+    value, hit = await cached(f"costing:summary:{rng.key()}", lambda: costing.summary(rng, refresh=refresh), refresh=refresh)
+    return _stamp(value, hit)

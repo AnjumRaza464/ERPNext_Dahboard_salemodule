@@ -1304,3 +1304,103 @@ async def adjustments(rng: DateRange, refresh: bool = False) -> dict[str, Any]:
         **empty, "net_value": round(float(val.sum()), 2), "increase": round(float(val[val > 0].sum()), 2), "decrease": round(float(val[val < 0].sum()), 2),
         "vouchers": int(df["voucher_no"].nunique()), "lines": int(len(df)), "by_group": by_group, "by_warehouse": by_wh, "items": items,
     }
+
+
+# ------------------------------------------------------------------ one-card summary of the whole chain
+
+async def _chain(rng: DateRange, refresh: bool = False) -> dict[str, Any]:
+    """The material chain for one range: bought -> issued by Stores -> consumed -> produced -> sent to outlet -> sold."""
+    pi, tr, se, sold, days = await asyncio.gather(
+        _purchase_frame(rng, refresh), _transfer_frame(rng, refresh), _production_frame(rng, refresh),
+        _sold_frame(rng, refresh), sales._check_days(rng, refresh),
+    )
+    daily = sales._daily(days, rng)
+    net_sales = float(daily["net"].sum()) if not daily.empty else 0.0
+    bills = int(daily["checks"].sum()) if not daily.empty else 0
+
+    raw_pi = pi[pi["item_group"] == RAW] if not pi.empty else pi
+    issued = tr[tr["source"] == STORE_LABEL] if not tr.empty else tr
+    dept_mask = issued["target"].map(_is_department) if not issued.empty else None
+    to_dept = issued[dept_mask] if dept_mask is not None else issued
+    to_other = issued[~dept_mask] if dept_mask is not None else issued
+    # finished goods (and anything else) moved on to the outlet from a warehouse other than Stores
+    dispatch = tr[(tr["source"] != STORE_LABEL) & ~tr["target"].map(_is_department)] if not tr.empty else tr
+    consumed = se[se["kind"] == "consumed"] if not se.empty else se
+    produced = se[se["kind"] == "produced"] if not se.empty else se
+
+    c_total, p_total = _sum(consumed, "amount"), _sum(produced, "amount")
+    sold_qty = _sum(sold, "qty")
+    made_qty = _sum(produced, "qty")
+    bought_fg_qty = 0.0
+    if not pi.empty and not sold.empty:
+        bought_fg_qty = float(pi[pi["item_code"].isin(set(sold["item_code"]) | set(produced["item_code"] if not produced.empty else []))]["qty"].sum())
+    available = made_qty + bought_fg_qty
+
+    # per department: issued in, consumed, produced
+    depts: dict[str, dict[str, float]] = {}
+    if not to_dept.empty:
+        for k, v in to_dept.groupby("target")["amount"].sum().items():
+            depts.setdefault(str(k), {"issued": 0.0, "consumed": 0.0, "produced": 0.0})["issued"] = float(v)
+    owner = pd.Series(dtype=object)
+    if not consumed.empty:
+        lab = consumed.assign(dept=consumed["warehouse"].map(dept_label))
+        owner = lab.groupby("parent")["dept"].first()
+        for k, v in lab.groupby("dept")["amount"].sum().items():
+            depts.setdefault(str(k), {"issued": 0.0, "consumed": 0.0, "produced": 0.0})["consumed"] = float(v)
+    if not produced.empty:
+        for k, v in produced.assign(dept=produced["parent"].map(owner).fillna("Unassigned")).groupby("dept")["amount"].sum().items():
+            depts.setdefault(str(k), {"issued": 0.0, "consumed": 0.0, "produced": 0.0})["produced"] = float(v)
+
+    return {
+        "purchased_raw": round(_sum(raw_pi, "amount"), 2), "purchased_all": round(_sum(pi, "amount"), 2),
+        "purchase_invoices": _nunique(pi, "parent"), "purchased_raw_items": _nunique(raw_pi, "item_code"),
+        "issued": round(_sum(issued, "amount"), 2), "issued_to_departments": round(_sum(to_dept, "amount"), 2),
+        "issued_to_other": round(_sum(to_other, "amount"), 2), "issue_entries": _nunique(issued, "parent"),
+        "consumed": round(c_total, 2), "consumed_raw": round(_sum(consumed[consumed["item_group"] == RAW], "amount"), 2) if not consumed.empty else 0.0,
+        "consumed_packaging": round(_sum(consumed[consumed["item_group"] == PACKAGING], "amount"), 2) if not consumed.empty else 0.0,
+        "production_entries": _nunique(se, "parent"), "materials_used": _nunique(consumed, "item_code"),
+        "produced": round(p_total, 2), "produced_qty": round(made_qty, 3), "products": _nunique(produced, "item_code"),
+        "dispatched": round(_sum(dispatch, "amount"), 2), "dispatched_qty": round(_sum(dispatch, "qty"), 3), "dispatch_entries": _nunique(dispatch, "parent"),
+        "bought_in_qty": round(bought_fg_qty, 3),
+        "sold": round(net_sales, 2), "sold_qty": round(sold_qty, 3), "bills": bills, "products_sold": _nunique(sold, "item_code"),
+        # ratios
+        "material_cost_pct": round(c_total / net_sales * 100, 1) if net_sales else None,
+        "material_margin": round(net_sales - c_total, 2),
+        "consumed_pct_of_issued": round(c_total / _sum(to_dept, "amount") * 100, 1) if _sum(to_dept, "amount") else None,
+        "output_per_100": round(p_total / c_total * 100, 1) if c_total else None,
+        "sell_through_pct": round(sold_qty / available * 100, 1) if available else None,
+        "not_sold_qty": round(available - sold_qty, 3),
+        "departments": [
+            {"department": k, "issued": round(v["issued"], 2), "consumed": round(v["consumed"], 2), "produced": round(v["produced"], 2),
+             "cost_pct": round(v["consumed"] / v["produced"] * 100, 1) if v["produced"] else None,
+             "share_pct": _share(v["consumed"], c_total)}
+            for k, v in sorted(depts.items(), key=lambda kv: -kv[1]["consumed"])
+        ],
+    }
+
+
+CHAIN_DELTAS = ("purchased_raw", "purchased_all", "issued", "issued_to_departments", "consumed", "produced", "produced_qty",
+                "dispatched", "sold", "sold_qty", "bills", "material_margin")
+CHAIN_POINTS = ("material_cost_pct", "sell_through_pct", "output_per_100", "consumed_pct_of_issued")
+
+
+async def summary(rng: DateRange, refresh: bool = False) -> dict[str, Any]:
+    """Everything on the Costing tab in one payload: the chain bought -> issued -> consumed -> produced -> sent to the
+    outlet -> sold, each step against the previous window, per-department lines, the ratios that matter, and stock."""
+    prev = rng.previous()
+    cur, before, st, adj = await asyncio.gather(_chain(rng, refresh), _chain(prev), _stock_frame(refresh), adjustments(rng, refresh))
+    raw_stock = st[st["item_group"] == RAW] if not st.empty else st
+    raw_value = _sum(raw_stock, "value")
+    daily_use = cur["consumed_raw"] / rng.days if rng.days else 0.0
+    return {
+        "source": "stock_entry", "range": rng.as_dict(), "previous_range": prev.as_dict(),
+        "current": cur, "previous": {k: v for k, v in before.items() if k != "departments"},
+        "delta_pct": {k: _pct(float(cur[k]), float(before[k])) for k in CHAIN_DELTAS},
+        "delta_points": {k: (round(cur[k] - before[k], 1) if cur[k] is not None and before[k] is not None else None) for k in CHAIN_POINTS},
+        "stock": {
+            "raw_value": round(raw_value, 2), "raw_items": _nunique(raw_stock, "item_code"),
+            "raw_days_cover": round(raw_value / daily_use, 1) if daily_use > 0 else None,
+            "total_value": round(_sum(st, "value"), 2),
+        },
+        "adjustments": {"net_value": adj["net_value"], "vouchers": adj["vouchers"]},
+    }

@@ -6,6 +6,7 @@ import { exportTable, type ExportFormat } from "@/lib/csv";
 import { fmtDate, fmtPeriod, fmtRange, num, pkr } from "@/lib/format";
 import type { CostingConsumption, CostingKpis, CostingPurchases, CostingStock, CostingTrend, Range } from "@/lib/types";
 import Card from "../Card";
+import CostingSummary from "../CostingSummary";
 import DepartmentDetail from "../DepartmentDetail";
 import ExportButtons from "../ExportButtons";
 import TableFilter from "../TableFilter";
@@ -223,6 +224,8 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
       <CostingKpiRow kpis={kpis} />
       {kpis.data && <CostingHealthLine kpis={kpis.data} />}
       <CostingPaceRow kpis={kpis} />
+
+      <CostingSummary range={range} refreshKey={refreshKey} onRetry={onRetry} />
 
       <Card
         title="Purchases, Consumption & Output"

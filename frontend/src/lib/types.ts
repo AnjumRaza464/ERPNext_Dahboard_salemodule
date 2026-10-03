@@ -1006,3 +1006,56 @@ export interface CostingAdjustments extends Base {
   by_warehouse: { warehouse: string; value: number }[];
   items: AdjustmentRow[];
 }
+
+export interface ChainDepartment {
+  department: string;
+  issued: number;
+  consumed: number;
+  produced: number;
+  cost_pct: number | null;
+  share_pct: number;
+}
+
+/** One range of the material chain: bought -> issued by Stores -> consumed -> produced -> sent to the outlet -> sold. */
+export interface ChainTotals {
+  purchased_raw: number;
+  purchased_all: number;
+  purchase_invoices: number;
+  purchased_raw_items: number;
+  issued: number;
+  issued_to_departments: number;
+  issued_to_other: number;
+  issue_entries: number;
+  consumed: number;
+  consumed_raw: number;
+  consumed_packaging: number;
+  production_entries: number;
+  materials_used: number;
+  produced: number;
+  produced_qty: number;
+  products: number;
+  dispatched: number;
+  dispatched_qty: number;
+  dispatch_entries: number;
+  bought_in_qty: number;
+  sold: number;
+  sold_qty: number;
+  bills: number;
+  products_sold: number;
+  material_cost_pct: number | null;
+  material_margin: number;
+  consumed_pct_of_issued: number | null;
+  output_per_100: number | null;
+  sell_through_pct: number | null;
+  not_sold_qty: number;
+}
+
+export interface CostingSummaryData extends Base {
+  previous_range: Range;
+  current: ChainTotals & { departments: ChainDepartment[] };
+  previous: ChainTotals;
+  delta_pct: Partial<Record<keyof ChainTotals, number | null>>;
+  delta_points: { material_cost_pct: number | null; sell_through_pct: number | null; output_per_100: number | null; consumed_pct_of_issued: number | null };
+  stock: { raw_value: number; raw_items: number; raw_days_cover: number | null; total_value: number };
+  adjustments: { net_value: number; vouchers: number };
+}
