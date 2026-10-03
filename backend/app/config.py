@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # per month; nothing is stored in ERPNext.
     monthly_targets: str = ""
 
+    # Placeholder items used for opening stock and one-off conversions (a lump "All B&B Raw" bought on 31 Mar 2026,
+    # turned into a dummy "Raw Material Cake" and later broken down again). Their stock entry and purchase lines are
+    # left out of every Costing figure, otherwise the same material is counted two or three times.
+    costing_exclude_items: str = "Raw Material Cake,All B&B Raw,All B&B F.G"
+
+    @property
+    def costing_excluded_items(self) -> set[str]:
+        return {x.strip().lower() for x in self.costing_exclude_items.split(",") if x.strip()}
+
     @property
     def excluded_dates(self) -> set[str]:
         return {d.strip() for d in self.exclude_dates_from_stats.split(",") if d.strip()}

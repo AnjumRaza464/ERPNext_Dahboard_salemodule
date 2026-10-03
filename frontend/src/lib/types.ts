@@ -574,7 +574,13 @@ export interface CostingKpis extends Base {
   /** ratio changes in percentage points */
   delta_points: { material_cost_pct: number | null; yield_pct: number | null; raw_purchases_pct_of_sales: number | null };
   stock: CostingStockSummary;
-  health: { last_purchase_date: string | null; last_production_date: string | null; today: string };
+  health: {
+    last_purchase_date: string | null;
+    last_production_date: string | null;
+    today: string;
+    /** opening / conversion placeholder items left out of every Costing figure, and how much they carried in this range */
+    excluded?: { items: string[]; purchases: number; consumed: number; produced: number };
+  };
 }
 
 export interface CostingTrendPoint {
@@ -705,6 +711,12 @@ export interface DepartmentSummary {
   avg_per_active_day: number;
   prev_amount: number;
   delta_pct: number | null;
+  /** finished goods value booked by this department's entries */
+  produced?: number;
+  /** material value this department consumed */
+  used?: number;
+  /** material used as % of what it produced */
+  cost_pct?: number | null;
 }
 
 export interface DepartmentDayRow {
@@ -865,4 +877,132 @@ export interface CostingFlow extends Base {
   weekday: FlowWeekdayRow[];
   invoices: PurchaseInvoiceRow[];
   invoices_total: number;
+}
+
+export interface IssueTarget {
+  /** warehouse the store issued to */
+  target: string;
+  is_department: boolean;
+  amount: number;
+  qty: number;
+  entries: number;
+  items: number;
+  active_days: number;
+  share_pct: number;
+  avg_per_active_day: number;
+  prev_amount: number;
+  delta_pct: number | null;
+  /** production consumption out of that department in the same range (null for non-departments) */
+  consumed: number | null;
+  consumed_qty: number | null;
+  variance: number | null;
+  variance_qty: number | null;
+  balance_now: number;
+}
+
+export interface StoreIssueDayRow {
+  period: string;
+  weekday: string;
+  total: number;
+  entries: number;
+  by_target: Record<string, number>;
+  to_departments: number;
+  consumed: number;
+  variance: number;
+}
+
+export interface IssuedItem extends ProducedItem {
+  consumed_qty: number | null;
+  consumed_amount: number | null;
+  variance_qty: number | null;
+}
+
+export interface StoreIssueEntry {
+  name: string;
+  date: string;
+  weekday: string;
+  target: string;
+  amount: number;
+  qty: number;
+  items: number;
+  groups: string;
+}
+
+/** What the Stores warehouse issued on Material Transfer entries. */
+export interface CostingStoreIssues extends Base {
+  previous_range: Range;
+  granularity: "day" | "month";
+  weekdays: string[];
+  store: string;
+  total: number;
+  to_departments: number;
+  to_other: number;
+  consumed_total: number;
+  targets: IssueTarget[];
+  daily: StoreIssueDayRow[];
+  items: Record<string, IssuedItem[]>;
+  entries: StoreIssueEntry[];
+  entries_total: number;
+}
+
+export interface ProducedSoldRow {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  produced_qty: number;
+  produced_value: number;
+  purchased_qty: number;
+  available_qty: number;
+  sold_qty: number;
+  sold_amount: number;
+  avg_price: number;
+  std_rate: number;
+  /** produced + bought in - sold; negative = sold out of earlier stock */
+  variance_qty: number;
+  unsold_value: number;
+  sell_through_pct: number | null;
+}
+
+export interface CostingProducedVsSold extends Base {
+  items: ProducedSoldRow[];
+  distinct_items: number;
+  groups: { item_group: string; produced_qty: number; purchased_qty: number; sold_qty: number; sold_amount: number; items: number; sell_through_pct: number | null }[];
+  totals: {
+    produced_qty: number;
+    produced_value: number;
+    purchased_qty: number;
+    available_qty: number;
+    sold_qty: number;
+    sold_amount: number;
+    variance_qty: number;
+    unsold_value: number;
+    sell_through_pct: number | null;
+  };
+}
+
+export interface AdjustmentRow {
+  date: string;
+  voucher: string;
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  warehouse: string;
+  uom: string;
+  qty_change: number;
+  qty_after: number;
+  rate_after: number;
+  value_change: number;
+}
+
+/** Stock Reconciliation postings in the range. */
+export interface CostingAdjustments extends Base {
+  net_value: number;
+  increase: number;
+  decrease: number;
+  vouchers: number;
+  lines: number;
+  by_group: { item_group: string; value: number }[];
+  by_warehouse: { warehouse: string; value: number }[];
+  items: AdjustmentRow[];
 }

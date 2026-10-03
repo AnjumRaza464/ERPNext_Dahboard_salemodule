@@ -87,3 +87,29 @@ async def costing_flow(
     with running totals, weekday averages, and every purchase invoice in the range."""
     value, hit = await cached(f"costing:flow:{rng.key()}:{weekdays or ''}", lambda: costing.flow(rng, refresh=refresh, weekdays=weekdays), refresh=refresh)
     return _stamp(value, hit)
+
+
+@router.get("/store-issues")
+async def costing_store_issues(
+    rng: DateRange = Depends(date_range), limit: int = Query(default=0, ge=0, le=1000, description="items per destination; 0 = every item"),
+    refresh: bool = False,
+    weekdays: str | None = Query(default=None, description="comma-separated weekday names to keep, e.g. Mon,Sat; empty = all"),
+):
+    """What Stores issued on Material Transfer entries: per destination vs the previous window, against what each
+    department consumed and still holds; day-by-day matrix, every item per destination and every transfer entry."""
+    value, hit = await cached(f"costing:store-issues:{rng.key()}:{limit}:{weekdays or ''}", lambda: costing.store_issues(rng, limit, refresh=refresh, weekdays=weekdays), refresh=refresh)
+    return _stamp(value, hit)
+
+
+@router.get("/produced-vs-sold")
+async def costing_produced_vs_sold(rng: DateRange = Depends(date_range), limit: int = Query(default=0, ge=0, le=1000, description="0 = every product"), refresh: bool = False):
+    """Per product: quantity produced plus bought in, against quantity sold on bills in the same range."""
+    value, hit = await cached(f"costing:pvs:{rng.key()}:{limit}", lambda: costing.produced_vs_sold(rng, limit, refresh=refresh), refresh=refresh)
+    return _stamp(value, hit)
+
+
+@router.get("/adjustments")
+async def costing_adjustments(rng: DateRange = Depends(date_range), refresh: bool = False):
+    """Stock Reconciliation postings in the range: value added or written off per item and warehouse."""
+    value, hit = await cached(f"costing:adjustments:{rng.key()}", lambda: costing.adjustments(rng, refresh=refresh), refresh=refresh)
+    return _stamp(value, hit)
