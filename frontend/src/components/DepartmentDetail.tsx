@@ -88,6 +88,8 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
     { key: "items", header: "Materials", value: (r) => r.items },
     { key: "active_days", header: "Active din", value: (r) => r.active_days },
     { key: "avg", header: "Avg per active din (PKR)", value: (r) => r.avg_per_active_day },
+    { key: "produced", header: "Produced (PKR)", value: (r) => r.produced ?? 0 },
+    { key: "cost_pct", header: "Material cost %", value: (r) => r.cost_pct ?? null },
     { key: "prev", header: "Previous (PKR)", value: (r) => r.prev_amount },
     { key: "delta", header: "Change %", value: (r) => r.delta_pct },
   ];
@@ -164,7 +166,7 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
         <div className="flex flex-col gap-4">
           {/* summary strip: one row per department */}
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-xs">
+            <table className="w-full min-w-[900px] text-xs">
               <thead>
                 <tr className={thead}>
                   <th className={th}>Department</th>
@@ -174,6 +176,8 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
                   <th className={`${th} text-right`}>Materials</th>
                   <th className={`${th} text-right`}>Active din</th>
                   <th className={`${th} text-right`}>Avg / active din</th>
+                  <th className={`${th} text-right`}>Produced</th>
+                  <th className={`${th} text-right`} title="material used as a share of the finished goods value the department produced">Material cost</th>
                   <th className={`${th} text-right`}>Previous</th>
                   <th className={`${th} text-right`}>vs prev</th>
                 </tr>
@@ -191,6 +195,8 @@ export default function DepartmentDetail({ range, refreshKey, onRetry }: Props) 
                     <td className={tdNum}>{num(r.items)}</td>
                     <td className={tdNum}>{num(r.active_days)}</td>
                     <td className={tdNum}>{pkr(r.avg_per_active_day)}</td>
+                    <td className={tdNum}>{r.produced ? pkr(r.produced) : <span className="text-ink-3">—</span>}</td>
+                    <td className="py-1.5 text-right font-medium text-ink">{r.cost_pct != null ? `${num(r.cost_pct, 1)}%` : <span className="font-normal text-ink-3">—</span>}</td>
                     <td className={tdNum}>{pkr(r.prev_amount)}</td>
                     <td className="py-1.5 text-right"><DeltaText value={r.delta_pct} invert /></td>
                   </tr>

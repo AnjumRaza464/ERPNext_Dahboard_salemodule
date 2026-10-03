@@ -10,7 +10,10 @@ import DepartmentDetail from "../DepartmentDetail";
 import ExportButtons from "../ExportButtons";
 import TableFilter from "../TableFilter";
 import FlowDetail from "../FlowDetail";
+import ProducedVsSold from "../ProducedVsSold";
 import ProductionDetail from "../ProductionDetail";
+import StockAdjustments from "../StockAdjustments";
+import StoreIssueDetail from "../StoreIssueDetail";
 import DeltaText from "../DeltaText";
 import KpiCard from "../KpiCard";
 import DonutChart from "../charts/DonutChart";
@@ -113,10 +116,13 @@ function CostingHealthLine({ kpis }: { kpis: CostingKpis }) {
   parts.push(`${num(c.production_days)} of ${num(c.calendar_days)} din had production`);
   parts.push(`${num(c.purchase_days)} din had purchases`);
   parts.push(`${num(c.consumed_items)} materials used`);
+  const ex = h.excluded;
+  const exNote = ex && (ex.purchases || ex.consumed || ex.produced) ? `Left out as opening / conversion entries (${ex.items.join(", ")}): purchases ${pkr(ex.purchases)} · consumed ${pkr(ex.consumed)} · produced ${pkr(ex.produced)}` : null;
   return (
     <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-[11px] ${stale ? "text-warn" : "text-ink-3"}`} title="Data health: production entries (Repack) and purchase invoices are posted in ERPNext after the fact, so recent days can change">
       {stale && <span className="inline-flex items-center rounded bg-warn/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warn">{lag} din se production entry nahi</span>}
       <span className="tnum">{parts.join(" · ")}</span>
+      {exNote && <span className="tnum basis-full text-ink-3">{exNote}</span>}
     </div>
   );
 }
@@ -327,9 +333,13 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
         </Card>
       </div>
 
+      <StoreIssueDetail range={range} refreshKey={refreshKey} onRetry={onRetry} />
+
       <DepartmentDetail range={range} refreshKey={refreshKey} onRetry={onRetry} />
 
       <ProductionDetail range={range} refreshKey={refreshKey} onRetry={onRetry} />
+
+      <ProducedVsSold range={range} refreshKey={refreshKey} onRetry={onRetry} />
 
       <Card
         title="Top Consumed Materials"
@@ -493,6 +503,8 @@ export default function CostingTab({ range, refreshKey, onRetry }: Props) {
           </div>
         )}
       </Card>
+
+      <StockAdjustments range={range} refreshKey={refreshKey} onRetry={onRetry} />
 
       <p className="px-1 text-[11px] text-ink-3">
         Purchases come from submitted Purchase Invoices. Consumption and output come from production Stock Entries (Repack): materials issued out of a department are

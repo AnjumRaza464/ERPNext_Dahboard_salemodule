@@ -28,6 +28,7 @@ from typing import Any
 import pandas as pd
 
 from ..cache import cached
+from ..config import get_settings
 from ..dates import DateRange, today_local
 from ..erpnext_client import get_client
 from . import sales
@@ -78,9 +79,25 @@ def _nunique(df: pd.DataFrame, col: str) -> int:
     return int(df[col].nunique()) if not df.empty else 0
 
 
+def _split_excluded(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(kept, dropped): lines whose item is an opening / conversion placeholder (COSTING_EXCLUDE_ITEMS) are dropped."""
+    names = get_settings().costing_excluded_items
+    if df.empty or not names:
+        return df, df.iloc[0:0]
+    mask = df["item_name"].astype(str).str.strip().str.lower().isin(names) | df["item_code"].astype(str).str.strip().str.lower().isin(names)
+    return df[~mask], df[mask]
+
+
+def dept_label(warehouse: str | None) -> str:
+    """Warehouse -> department label. Material consumed straight out of Stores (how production was booked before
+    the departments were set up on 24 Jun 2026) is labelled so it does not read as a department."""
+    label = outlet_label(warehouse)
+    return "Stores (direct)" if label == "Stores" else label
+
+
 # ------------------------------------------------------------------ frames
 
-async def _purchase_frame(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
+async def _purchase_frame(rng: DateRange, refresh: bool = False, with_excluded: bool = False) -> pd.DataFrame:
     """Purchase Invoice lines in the range (returns come through as negative qty / amount)."""
 
     async def _load() -> list[dict[str, Any]]:
@@ -114,10 +131,11 @@ async def _purchase_frame(rng: DateRange, refresh: bool = False) -> pd.DataFrame
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    return _num(df, ("qty", "amount"))
+    df = _num(df, ("qty", "amount"))
+    return df if with_excluded else _split_excluded(df)[0]
 
 
-async def _production_frame(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
+async def _production_frame(rng: DateRange, refresh: bool = False, with_excluded: bool = False) -> pd.DataFrame:
     """Production Stock Entries (Repack / Manufacture / Material Issue) split into consumed and produced lines."""
 
     async def _load() -> list[dict[str, Any]]:
@@ -155,7 +173,8 @@ async def _production_frame(rng: DateRange, refresh: bool = False) -> pd.DataFra
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    return _num(df, ("qty", "amount"))
+    df = _num(df, ("qty", "amount"))
+    return df if with_excluded else _split_excluded(df)[0]
 
 
 async def _stock_frame(refresh: bool = False) -> pd.DataFrame:
@@ -270,6 +289,14 @@ async def kpis(rng: DateRange, refresh: bool = False) -> dict[str, Any]:
     )
     cur_t = _totals(pi, se, rng, net)
     prev_t = _totals(pi_prev, se_prev, prev, net_prev)
+    pi_raw, se_raw = await asyncio.gather(_purchase_frame(rng, with_excluded=True), _production_frame(rng, with_excluded=True))
+    pi_drop, se_drop = _split_excluded(pi_raw)[1], _split_excluded(se_raw)[1]
+    excluded = {
+        "items": sorted(set(pi_drop["item_name"]) | set(se_drop["item_name"])) if not (pi_drop.empty and se_drop.empty) else [],
+        "purchases": round(_sum(pi_drop, "amount"), 2),
+        "consumed": round(_sum(se_drop[se_drop["kind"] == "consumed"], "amount"), 2) if not se_drop.empty else 0.0,
+        "produced": round(_sum(se_drop[se_drop["kind"] == "produced"], "amount"), 2) if not se_drop.empty else 0.0,
+    }
     delta = {k: _pct(float(cur_t[k]), float(prev_t[k])) for k in DELTA_KEYS}
     # ratios compare in percentage points, not percent of percent
     delta_points = {
@@ -302,7 +329,7 @@ async def kpis(rng: DateRange, refresh: bool = False) -> dict[str, Any]:
             "raw_days_cover": round(raw_value / daily_raw_use, 1) if daily_raw_use > 0 else None,
             "by_warehouse": by_wh,
         },
-        "health": {**latest, "today": today_local().isoformat()},
+        "health": {**latest, "today": today_local().isoformat(), "excluded": excluded},
     }
 
 
@@ -385,7 +412,7 @@ async def consumption(rng: DateRange, limit: int = 15, refresh: bool = False) ->
 
     dep = consumed.groupby("warehouse", as_index=False).agg(amount=("amount", "sum"), entries=("parent", "nunique"), items=("item_code", "nunique"))
     by_department = [
-        {"department": outlet_label(r.warehouse), "amount": round(float(r.amount), 2), "entries": int(r.entries), "items": int(r.items),
+        {"department": dept_label(r.warehouse), "amount": round(float(r.amount), 2), "entries": int(r.entries), "items": int(r.items),
          "share_pct": _share(float(r.amount), total)}
         for r in dep.sort_values("amount", ascending=False).itertuples()
     ]
@@ -570,7 +597,7 @@ async def departments(rng: DateRange, limit: int = 10, refresh: bool = False, we
     consumed = se[se["kind"] == "consumed"].copy()
     if consumed.empty:
         return empty
-    consumed["dept"] = consumed["warehouse"].map(outlet_label)
+    consumed["dept"] = consumed["warehouse"].map(dept_label)
     produced = se[se["kind"] == "produced"]
     total = _sum(consumed, "amount")
     days_in_range = _days(rng, sel)
@@ -579,18 +606,25 @@ async def departments(rng: DateRange, limit: int = 10, refresh: bool = False, we
     prev_c = se_prev[se_prev["kind"] == "consumed"].copy() if not se_prev.empty else se_prev
     prev_map: dict[str, float] = {}
     if not prev_c.empty:
-        prev_c["dept"] = prev_c["warehouse"].map(outlet_label)
+        prev_c["dept"] = prev_c["warehouse"].map(dept_label)
         prev_map = {str(k): float(v) for k, v in prev_c.groupby("dept")["amount"].sum().items()}
     g = consumed.groupby("dept", as_index=False).agg(
         amount=("amount", "sum"), qty=("qty", "sum"), entries=("parent", "nunique"), items=("item_code", "nunique"),
         active_days=("date", lambda s: s.dt.normalize().nunique()),
     ).sort_values("amount", ascending=False)
     depts = [str(d) for d in g["dept"]]
+    # finished goods booked by the same entries: material cost as a share of what the department produced
+    made: dict[str, float] = {}
+    if not produced.empty:
+        owner = consumed.groupby("parent")["dept"].first()
+        made = {str(k): float(v) for k, v in produced.assign(dept=produced["parent"].map(owner)).groupby("dept")["amount"].sum().items()}
     summary = [
         {"department": r.dept, "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3), "entries": int(r.entries), "items": int(r.items),
          "active_days": int(r.active_days), "share_pct": _share(float(r.amount), total),
          "avg_per_active_day": round(float(r.amount) / int(r.active_days), 2) if r.active_days else 0.0,
-         "prev_amount": round(prev_map.get(r.dept, 0.0), 2), "delta_pct": _pct(float(r.amount), prev_map.get(r.dept, 0.0))}
+         "prev_amount": round(prev_map.get(r.dept, 0.0), 2), "delta_pct": _pct(float(r.amount), prev_map.get(r.dept, 0.0)),
+         "produced": round(made.get(r.dept, 0.0), 2), "used": round(float(r.amount), 2),
+         "cost_pct": round(float(r.amount) / made[r.dept] * 100, 1) if made.get(r.dept) else None}
         for r in g.itertuples()
     ]
 
@@ -670,7 +704,7 @@ def _dept_of_entry(consumed: pd.DataFrame) -> pd.Series:
     """Stock Entry name -> producing department (the department its materials were issued from)."""
     if consumed.empty:
         return pd.Series(dtype=object)
-    return consumed.assign(dept=consumed["warehouse"].map(outlet_label)).groupby("parent")["dept"].first()
+    return consumed.assign(dept=consumed["warehouse"].map(dept_label)).groupby("parent")["dept"].first()
 
 
 def _product_rows(df: pd.DataFrame, total: float, prev: pd.DataFrame | None, limit: int) -> list[dict[str, Any]]:
@@ -724,11 +758,16 @@ async def production(rng: DateRange, limit: int = 15, refresh: bool = False, wee
         active_days=("date", lambda s: s.dt.normalize().nunique()),
     ).sort_values("amount", ascending=False)
     depts = [str(d) for d in g["dept"]]
+    spent: dict[str, float] = {}
+    if not consumed.empty:
+        spent = {str(k): float(v) for k, v in consumed.assign(dept=consumed["warehouse"].map(dept_label)).groupby("dept")["amount"].sum().items()}
     summary = [
         {"department": r.dept, "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3), "entries": int(r.entries), "items": int(r.items),
          "active_days": int(r.active_days), "share_pct": _share(float(r.amount), total),
          "avg_per_active_day": round(float(r.amount) / int(r.active_days), 2) if r.active_days else 0.0,
-         "prev_amount": round(prev_map.get(r.dept, 0.0), 2), "delta_pct": _pct(float(r.amount), prev_map.get(r.dept, 0.0))}
+         "prev_amount": round(prev_map.get(r.dept, 0.0), 2), "delta_pct": _pct(float(r.amount), prev_map.get(r.dept, 0.0)),
+         "produced": round(float(r.amount), 2), "used": round(spent.get(r.dept, 0.0), 2),
+         "cost_pct": round(spent[r.dept] / float(r.amount) * 100, 1) if spent.get(r.dept) and r.amount else None}
         for r in g.itertuples()
     ]
 
@@ -942,4 +981,326 @@ async def flow(rng: DateRange, refresh: bool = False, weekdays: str | None = Non
         "weekdays": sorted(WEEKDAYS[i] for i in sel) if sel else [],
         "summary": summary, "ratios": ratios, "daily": daily, "weekday": weekday,
         "invoices": invoices, "invoices_total": total_invoices,
+    }
+
+
+# ------------------------------------------------------------------ store issue (Stores -> departments / outlet)
+
+STORE_LABEL = "Stores"
+TR_COLS = ["parent", "date", "source", "target", "item_code", "item_name", "item_group", "uom", "qty", "amount"]
+
+
+async def _transfer_frame(rng: DateRange, refresh: bool = False, with_excluded: bool = False) -> pd.DataFrame:
+    """Material Transfer lines: one row per entry x item x source warehouse x target warehouse."""
+
+    async def _load() -> list[dict[str, Any]]:
+        c = get_client()
+        heads = await c.get_all("Stock Entry", ["name", "posting_date"], _filters(rng, [["purpose", "=", "Material Transfer"]]))
+        if not heads:
+            return []
+        meta = {h["name"]: h for h in heads}
+        results = await asyncio.gather(*[
+            c.get_list(
+                "Stock Entry Detail",
+                ["parent", "item_code", "item_name", "item_group", "stock_uom", "s_warehouse", "t_warehouse",
+                 "sum(transfer_qty) as qty", "sum(amount) as amount"],
+                [["parent", "in", chunk]], group_by="parent, item_code, s_warehouse, t_warehouse", parent="Stock Entry", limit_page_length=None,
+            )
+            for chunk in _chunks(list(meta))
+        ])
+        out: list[dict[str, Any]] = []
+        for chunk in results:
+            for r in chunk:
+                h = meta.get(r["parent"]) or {}
+                out.append({
+                    "parent": r["parent"], "date": h.get("posting_date"),
+                    "source": outlet_label(r.get("s_warehouse")), "target": outlet_label(r.get("t_warehouse")),
+                    "item_code": r["item_code"], "item_name": r.get("item_name") or r["item_code"],
+                    "item_group": r.get("item_group") or "Ungrouped", "uom": r.get("stock_uom") or "",
+                    "qty": r.get("qty") or 0, "amount": r.get("amount") or 0,
+                })
+        return out
+
+    rows, _ = await cached(f"costing:tr:{rng.key()}", _load, refresh=_refresh_ok(rng, refresh))
+    df = pd.DataFrame(rows, columns=TR_COLS)
+    if df.empty:
+        return df
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = _num(df, ("qty", "amount"))
+    return df if with_excluded else _split_excluded(df)[0]
+
+
+def _is_department(label: str) -> bool:
+    return label.strip().lower().endswith("department")
+
+
+async def store_issues(rng: DateRange, limit: int = 0, refresh: bool = False, weekdays: str | None = None) -> dict[str, Any]:
+    """What left the Stores warehouse on Material Transfer entries: per destination (production departments,
+    outlet) vs the previous window, set against what each department then consumed in production and what it
+    still holds; day-by-day matrix, every item per destination, and every transfer entry."""
+    prev = rng.previous()
+    sel = weekday_set(weekdays)
+    tr, tr_prev, se, st = await asyncio.gather(
+        _transfer_frame(rng, refresh), _transfer_frame(prev), _production_frame(rng, refresh), _stock_frame(refresh),
+    )
+    tr, tr_prev, se = _only_weekdays(tr, sel), _only_weekdays(tr_prev, sel), _only_weekdays(se, sel)
+    empty = {"source": "stock_entry", "range": rng.as_dict(), "previous_range": prev.as_dict(), "granularity": rng.granularity,
+             "weekdays": sorted(WEEKDAYS[i] for i in sel) if sel else [], "store": STORE_LABEL,
+             "total": 0.0, "to_departments": 0.0, "to_other": 0.0, "consumed_total": 0.0,
+             "targets": [], "daily": [], "items": {}, "entries": [], "entries_total": 0}
+    issued = tr[tr["source"] == STORE_LABEL] if not tr.empty else tr
+    if issued.empty:
+        return empty
+    total = _sum(issued, "amount")
+    days_in_range = _days(rng, sel)
+
+    # what each department then used in production (same range), and what it holds right now
+    consumed = se[se["kind"] == "consumed"].copy() if not se.empty else se
+    if not consumed.empty:
+        consumed["dept"] = consumed["warehouse"].map(dept_label)
+    cons_amt = {str(k): float(v) for k, v in consumed.groupby("dept")["amount"].sum().items()} if not consumed.empty else {}
+    cons_qty = {str(k): float(v) for k, v in consumed.groupby("dept")["qty"].sum().items()} if not consumed.empty else {}
+    balance = {}
+    if not st.empty:
+        balance = {str(k): float(v) for k, v in st.assign(label=st["warehouse"].map(outlet_label)).groupby("label")["value"].sum().items()}
+
+    prev_issued = tr_prev[tr_prev["source"] == STORE_LABEL] if not tr_prev.empty else tr_prev
+    prev_map = {str(k): float(v) for k, v in prev_issued.groupby("target")["amount"].sum().items()} if not prev_issued.empty else {}
+
+    g = issued.groupby("target", as_index=False).agg(
+        amount=("amount", "sum"), qty=("qty", "sum"), entries=("parent", "nunique"), items=("item_code", "nunique"),
+        active_days=("date", lambda s: s.dt.normalize().nunique()),
+    ).sort_values("amount", ascending=False)
+    targets = [str(t) for t in g["target"]]
+    summary = []
+    for r in g.itertuples():
+        dept = _is_department(r.target)
+        used = cons_amt.get(r.target, 0.0) if dept else None
+        summary.append({
+            "target": r.target, "is_department": dept, "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3),
+            "entries": int(r.entries), "items": int(r.items), "active_days": int(r.active_days), "share_pct": _share(float(r.amount), total),
+            "avg_per_active_day": round(float(r.amount) / int(r.active_days), 2) if r.active_days else 0.0,
+            "prev_amount": round(prev_map.get(r.target, 0.0), 2), "delta_pct": _pct(float(r.amount), prev_map.get(r.target, 0.0)),
+            "consumed": round(used, 2) if used is not None else None,
+            "consumed_qty": round(cons_qty.get(r.target, 0.0), 3) if dept else None,
+            # issued minus consumed: positive = material still sitting in the department (or a valuation difference)
+            "variance": round(float(r.amount) - used, 2) if used is not None else None,
+            "variance_qty": round(float(r.qty) - cons_qty.get(r.target, 0.0), 3) if dept else None,
+            "balance_now": round(balance.get(r.target, 0.0), 2),
+        })
+    to_departments = sum(s["amount"] for s in summary if s["is_department"])
+
+    # day x destination matrix, with that day's production consumption alongside
+    by_day = issued["date"].dt.normalize()
+    pivot = issued.pivot_table(index=by_day, columns="target", values="amount", aggfunc="sum", fill_value=0.0)
+    pivot = pivot.reindex(days_in_range, fill_value=0.0).reindex(columns=targets, fill_value=0.0)
+    entries_day = issued.groupby(by_day)["parent"].nunique().reindex(days_in_range, fill_value=0)
+    cons_day = pd.Series(0.0, index=days_in_range)
+    if not consumed.empty:
+        cons_day = consumed.groupby(consumed["date"].dt.normalize())["amount"].sum().reindex(days_in_range, fill_value=0.0)
+    if rng.granularity == "month":
+        pivot = pivot.groupby(pivot.index.to_period("M")).sum()
+        pivot.index = pivot.index.to_timestamp()
+        entries_day = entries_day.groupby(entries_day.index.to_period("M")).sum()
+        entries_day.index = entries_day.index.to_timestamp()
+        cons_day = cons_day.groupby(cons_day.index.to_period("M")).sum()
+        cons_day.index = cons_day.index.to_timestamp()
+    dept_cols = [t for t in targets if _is_department(t)]
+    daily = []
+    for d, row in pivot.iterrows():
+        to_dept = float(row[dept_cols].sum()) if dept_cols else 0.0
+        used = float(cons_day.get(d, 0.0))
+        daily.append({
+            "period": d.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[d.weekday()], "total": round(float(row.sum()), 2),
+            "entries": int(entries_day.get(d, 0)), "by_target": {k: round(float(v), 2) for k, v in row.items()},
+            "to_departments": round(to_dept, 2), "consumed": round(used, 2), "variance": round(to_dept - used, 2),
+        })
+
+    # every item per destination, against what that department consumed of it
+    items: dict[str, list[dict[str, Any]]] = {}
+    for t in targets:
+        sub = issued[issued["target"] == t]
+        gi = _group_items(sub)
+        tt = _sum(sub, "amount")
+        used_q: dict[str, float] = {}
+        used_a: dict[str, float] = {}
+        if _is_department(t) and not consumed.empty:
+            c = consumed[consumed["dept"] == t]
+            used_q = {str(k): float(v) for k, v in c.groupby("item_code")["qty"].sum().items()}
+            used_a = {str(k): float(v) for k, v in c.groupby("item_code")["amount"].sum().items()}
+        items[t] = [
+            {"item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group, "uom": r.uom, "qty": round(float(r.qty), 3),
+             "amount": round(float(r.amount), 2), "rate": round(float(r.rate), 2), "entries": int(r.entries), "share_pct": _share(float(r.amount), tt),
+             "consumed_qty": round(used_q.get(r.item_code, 0.0), 3) if _is_department(t) else None,
+             "consumed_amount": round(used_a.get(r.item_code, 0.0), 2) if _is_department(t) else None,
+             "variance_qty": round(float(r.qty) - used_q.get(r.item_code, 0.0), 3) if _is_department(t) else None}
+            for r in _head(gi, limit).itertuples()
+        ]
+
+    ge = issued.groupby(["parent", "target"], as_index=False).agg(
+        date=("date", "first"), amount=("amount", "sum"), qty=("qty", "sum"), items=("item_code", "nunique"),
+        groups=("item_group", lambda s: ", ".join(sorted(set(s)))),
+    ).sort_values(["date", "parent"], ascending=[False, False])
+    entries = [
+        {"name": r.parent, "date": r.date.strftime("%Y-%m-%d"), "weekday": WEEKDAYS[r.date.weekday()], "target": r.target,
+         "amount": round(float(r.amount), 2), "qty": round(float(r.qty), 3), "items": int(r.items), "groups": r.groups}
+        for r in ge.head(ENTRY_LIMIT).itertuples()
+    ]
+    return {
+        **empty, "total": round(total, 2), "to_departments": round(to_departments, 2), "to_other": round(total - to_departments, 2),
+        "consumed_total": round(sum(v for k, v in cons_amt.items() if _is_department(k)), 2),
+        "targets": summary, "daily": daily, "items": items, "entries": entries, "entries_total": int(len(ge)),
+    }
+
+
+# ------------------------------------------------------------------ produced vs sold
+
+SOLD_COLS = ["item_code", "item_name", "item_group", "uom", "qty", "amount"]
+
+
+async def _sold_frame(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
+    """Items sold on bills in the range, in stock units: one row per item (qty in stock UOM, net amount)."""
+
+    async def _load() -> list[dict[str, Any]]:
+        c = get_client()
+        out: list[dict[str, Any]] = []
+        for parent_dt, child_dt, extra in sales.ITEM_SOURCES:
+            names = [r["name"] for r in await c.get_all(parent_dt, ["name"], sales.live._filters(rng, extra + [["is_return", "=", 0]]))]
+            if not names:
+                continue
+            results = await asyncio.gather(*[
+                c.get_list(
+                    child_dt,
+                    ["item_code", "item_name", "item_group", "stock_uom", "sum(stock_qty) as qty", "sum(base_net_amount) as amount"],
+                    [["parent", "in", chunk]], group_by="item_code", parent=parent_dt, limit_page_length=None,
+                )
+                for chunk in _chunks(names)
+            ])
+            for chunk in results:
+                for r in chunk:
+                    out.append({"item_code": r["item_code"], "item_name": r.get("item_name") or r["item_code"],
+                                "item_group": r.get("item_group") or "Ungrouped", "uom": r.get("stock_uom") or "",
+                                "qty": r.get("qty") or 0, "amount": r.get("amount") or 0})
+        return out
+
+    rows, _ = await cached(f"costing:sold:{rng.key()}", _load, refresh=_refresh_ok(rng, refresh))
+    df = pd.DataFrame(rows, columns=SOLD_COLS)
+    if df.empty:
+        return df
+    df = _num(df, ("qty", "amount"))
+    df = df.groupby("item_code", as_index=False).agg(item_name=("item_name", "first"), item_group=("item_group", "first"), uom=("uom", "first"), qty=("qty", "sum"), amount=("amount", "sum"))
+    return _split_excluded(df)[0]
+
+
+async def produced_vs_sold(rng: DateRange, limit: int = 0, refresh: bool = False) -> dict[str, Any]:
+    """Per product: quantity produced (production entries) plus quantity bought in (purchase invoices), against the
+    quantity sold on bills in the same range. The gap is unsold stock, wastage, or sales out of earlier stock."""
+    se, pi, sold = await asyncio.gather(_production_frame(rng, refresh), _purchase_frame(rng, refresh), _sold_frame(rng, refresh))
+    empty = {"source": "stock_entry", "range": rng.as_dict(), "items": [], "distinct_items": 0, "groups": [],
+             "totals": {"produced_qty": 0.0, "produced_value": 0.0, "purchased_qty": 0.0, "available_qty": 0.0, "sold_qty": 0.0,
+                        "sold_amount": 0.0, "variance_qty": 0.0, "unsold_value": 0.0, "sell_through_pct": None}}
+    produced = se[se["kind"] == "produced"] if not se.empty else se
+    made = _group_items(produced)[["item_code", "item_name", "item_group", "uom", "qty", "amount"]] if not produced.empty else pd.DataFrame(columns=SOLD_COLS)
+    if sold.empty and made.empty:
+        return empty
+    bought = _group_items(pi)[["item_code", "item_name", "item_group", "uom", "qty", "amount"]] if not pi.empty else pd.DataFrame(columns=SOLD_COLS)
+
+    m = made.rename(columns={"qty": "produced_qty", "amount": "produced_value"}).merge(
+        sold.rename(columns={"qty": "sold_qty", "amount": "sold_amount"}), on="item_code", how="outer", suffixes=("", "_s"))
+    for col in ("item_name", "item_group", "uom"):
+        m[col] = m[col].fillna(m[f"{col}_s"])
+    m = m.drop(columns=["item_name_s", "item_group_s", "uom_s"])
+    # bought-in stock only matters for things that are produced or sold (resale items, bought-in finished goods)
+    b = bought[bought["item_code"].isin(m["item_code"])].rename(columns={"qty": "purchased_qty", "amount": "purchased_value"})[["item_code", "purchased_qty", "purchased_value"]]
+    m = m.merge(b, on="item_code", how="left")
+    for col in ("produced_qty", "produced_value", "sold_qty", "sold_amount", "purchased_qty", "purchased_value"):
+        m[col] = pd.to_numeric(m[col], errors="coerce").fillna(0.0)
+    m["available_qty"] = m["produced_qty"] + m["purchased_qty"]
+    m["variance_qty"] = m["available_qty"] - m["sold_qty"]
+    m = m.sort_values(["sold_amount", "produced_value"], ascending=False).reset_index(drop=True)
+
+    def _row(r: Any) -> dict[str, Any]:
+        price = r.sold_amount / r.sold_qty if r.sold_qty else 0.0
+        std = r.produced_value / r.produced_qty if r.produced_qty else (r.purchased_value / r.purchased_qty if r.purchased_qty else price)
+        return {
+            "item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group, "uom": r.uom,
+            "produced_qty": round(float(r.produced_qty), 3), "produced_value": round(float(r.produced_value), 2),
+            "purchased_qty": round(float(r.purchased_qty), 3), "available_qty": round(float(r.available_qty), 3),
+            "sold_qty": round(float(r.sold_qty), 3), "sold_amount": round(float(r.sold_amount), 2),
+            "avg_price": round(float(price), 2), "std_rate": round(float(std), 2),
+            # positive = made / bought but not sold in the range; negative = sold out of earlier stock
+            "variance_qty": round(float(r.variance_qty), 3),
+            "unsold_value": round(float(max(r.variance_qty, 0.0) * std), 2),
+            "sell_through_pct": round(float(r.sold_qty) / float(r.available_qty) * 100, 1) if r.available_qty else None,
+        }
+
+    rows = [_row(r) for r in _head(m, limit).itertuples()]
+    all_rows = rows if limit <= 0 else [_row(r) for r in m.itertuples()]
+    avail = float(m["available_qty"].sum())
+    grp = m.groupby("item_group", as_index=False).agg(produced_qty=("produced_qty", "sum"), purchased_qty=("purchased_qty", "sum"),
+                                                     sold_qty=("sold_qty", "sum"), sold_amount=("sold_amount", "sum"), items=("item_code", "nunique"))
+    groups = [
+        {"item_group": r.item_group, "produced_qty": round(float(r.produced_qty), 3), "purchased_qty": round(float(r.purchased_qty), 3),
+         "sold_qty": round(float(r.sold_qty), 3), "sold_amount": round(float(r.sold_amount), 2), "items": int(r.items),
+         "sell_through_pct": round(float(r.sold_qty) / (float(r.produced_qty) + float(r.purchased_qty)) * 100, 1) if (r.produced_qty + r.purchased_qty) else None}
+        for r in grp.sort_values("sold_amount", ascending=False).itertuples()
+    ]
+    return {
+        **empty, "items": rows, "distinct_items": int(len(m)), "groups": groups,
+        "totals": {
+            "produced_qty": round(float(m["produced_qty"].sum()), 3), "produced_value": round(float(m["produced_value"].sum()), 2),
+            "purchased_qty": round(float(m["purchased_qty"].sum()), 3), "available_qty": round(avail, 3),
+            "sold_qty": round(float(m["sold_qty"].sum()), 3), "sold_amount": round(float(m["sold_amount"].sum()), 2),
+            "variance_qty": round(float(m["variance_qty"].sum()), 3),
+            "unsold_value": round(sum(x["unsold_value"] for x in all_rows), 2),
+            "sell_through_pct": round(float(m["sold_qty"].sum()) / avail * 100, 1) if avail else None,
+        },
+    }
+
+
+# ------------------------------------------------------------------ stock adjustments (reconciliation)
+
+async def adjustments(rng: DateRange, refresh: bool = False) -> dict[str, Any]:
+    """Stock Reconciliation postings in the range: what the stock count changed, per item and warehouse."""
+
+    async def _load() -> list[dict[str, Any]]:
+        c = get_client()
+        sle, items = await asyncio.gather(
+            c.get_all("Stock Ledger Entry",
+                      ["posting_date", "voucher_no", "item_code", "warehouse", "actual_qty", "qty_after_transaction", "valuation_rate", "stock_value_difference", "stock_uom"],
+                      [["company", "=", c.company], ["is_cancelled", "=", 0], ["voucher_type", "=", "Stock Reconciliation"],
+                       ["posting_date", ">=", rng.start.isoformat()], ["posting_date", "<=", rng.end.isoformat()]], page_size=2000),
+            c.get_all("Item", ["name", "item_name", "item_group"], [["is_stock_item", "=", 1]], page_size=2000),
+        )
+        imap = {i["name"]: i for i in items}
+        return [{**r, "item_name": imap.get(r["item_code"], {}).get("item_name") or r["item_code"],
+                 "item_group": imap.get(r["item_code"], {}).get("item_group") or "Ungrouped"} for r in sle]
+
+    rows, _ = await cached(f"costing:adj:{rng.key()}", _load, refresh=_refresh_ok(rng, refresh))
+    empty = {"source": "bin", "range": rng.as_dict(), "net_value": 0.0, "increase": 0.0, "decrease": 0.0, "vouchers": 0, "lines": 0,
+             "by_group": [], "by_warehouse": [], "items": []}
+    if not rows:
+        return empty
+    df = pd.DataFrame(rows)
+    df = _num(df, ("actual_qty", "qty_after_transaction", "valuation_rate", "stock_value_difference"))
+    df = df.sort_values("stock_value_difference", key=lambda s: s.abs(), ascending=False)
+    val = df["stock_value_difference"]
+    by_group = [
+        {"item_group": k, "value": round(float(v), 2)}
+        for k, v in df.groupby("item_group")["stock_value_difference"].sum().sort_values(key=lambda s: s.abs(), ascending=False).items()
+    ]
+    by_wh = [
+        {"warehouse": outlet_label(k), "value": round(float(v), 2)}
+        for k, v in df.groupby("warehouse")["stock_value_difference"].sum().sort_values(key=lambda s: s.abs(), ascending=False).items()
+    ]
+    items = [
+        {"date": str(r.posting_date), "voucher": r.voucher_no, "item_code": r.item_code, "item_name": r.item_name, "item_group": r.item_group,
+         "warehouse": outlet_label(r.warehouse), "uom": r.stock_uom or "", "qty_change": round(float(r.actual_qty), 3),
+         "qty_after": round(float(r.qty_after_transaction), 3), "rate_after": round(float(r.valuation_rate), 2),
+         "value_change": round(float(r.stock_value_difference), 2)}
+        for r in df.itertuples()
+    ]
+    return {
+        **empty, "net_value": round(float(val.sum()), 2), "increase": round(float(val[val > 0].sum()), 2), "decrease": round(float(val[val < 0].sum()), 2),
+        "vouchers": int(df["voucher_no"].nunique()), "lines": int(len(df)), "by_group": by_group, "by_warehouse": by_wh, "items": items,
     }
