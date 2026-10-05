@@ -16,6 +16,7 @@ import LiveCompare from "../LiveCompare";
 import MorningBrief from "../MorningBrief";
 import PmixTable from "../PmixTable";
 import SalesComparison, { lastYearUnavailable } from "../SalesComparison";
+import SalesSummary from "../SalesSummary";
 import TargetTile from "../TargetTile";
 import WeeklyRhythm from "../WeeklyRhythm";
 import { sectionId, type CompareCommand, type LiveCommand } from "@/lib/voice";
@@ -433,6 +434,7 @@ export default function SalesTab({
       <div id={sectionId("pace")} className="scroll-mt-4">
         <SalesPaceRow pace={pace} onTargetChange={setTarget} />
       </div>
+      <SalesSummary range={range} refreshKey={refreshKey} onRetry={onRetry} kpis={kpis} pace={pace} cmpLabel={CMP_LABEL[effectiveMode]} />
       <MorningBrief refreshKey={refreshKey} target={target} />
       <LiveCompare refreshKey={refreshKey} onRetry={onRetry} command={liveCommand} />
       <WeeklyRhythm refreshKey={refreshKey} />
