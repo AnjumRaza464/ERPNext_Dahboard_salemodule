@@ -1059,3 +1059,41 @@ export interface CostingSummaryData extends Base {
   stock: { raw_value: number; raw_items: number; raw_days_cover: number | null; total_value: number };
   adjustments: { net_value: number; vouchers: number };
 }
+
+// ---------------------------------------------------------------- production forecast
+
+export interface PlanItem {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  department: string;
+  /** qty sold on each of the days used (ISO date -> qty) */
+  by_date: Record<string, number>;
+  avg_qty: number;
+  /** average rounded up to whole units */
+  suggested_qty: number;
+  last_week_qty: number;
+  max_qty: number;
+  min_qty: number;
+  days_sold: number;
+  avg_sales: number;
+  avg_price: number;
+  trend_pct: number | null;
+}
+
+export interface NextDayPlan {
+  source: Source;
+  plan_date: string;
+  weekday: string;
+  weeks: number;
+  /** same_weekday = average of past same weekdays; recent_days = fallback when none traded */
+  basis: "same_weekday" | "recent_days";
+  lookback_weeks: number;
+  dates_used: string[];
+  dates_skipped: { date: string; reason: string }[];
+  items: PlanItem[];
+  by_department: { department: string; suggested_qty: number; avg_sales: number; products: number }[];
+  totals: { suggested_qty: number; avg_sales: number; products: number; last_week_qty: number; last_week_sales: number };
+  cached?: boolean;
+}

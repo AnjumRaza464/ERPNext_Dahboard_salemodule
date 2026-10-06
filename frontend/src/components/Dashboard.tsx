@@ -10,6 +10,7 @@ import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { AutoRefreshControl, DASHBOARD_INTERVALS, parseIntervalEnv, RefreshCountdown, withDefault } from "./AutoRefreshControl";
 import DateFilter from "./DateFilter";
 import CostingTab from "./tabs/CostingTab";
+import ForecastTab from "./tabs/ForecastTab";
 import SalesTab from "./tabs/SalesTab";
 import VoiceAssistant from "./VoiceAssistant";
 
@@ -25,10 +26,11 @@ const DEFAULT_AUTO_REFRESH = parseIntervalEnv(process.env.NEXT_PUBLIC_AUTO_REFRE
 const AUTO_REFRESH_OPTIONS = withDefault(DASHBOARD_INTERVALS, DEFAULT_AUTO_REFRESH);
 
 // Top-level dashboard tabs. The date range in the control bar applies to whichever tab is open.
-type Tab = "sales" | "costing";
+type Tab = "sales" | "costing" | "forecast";
 const TABS: { id: Tab; label: string }[] = [
   { id: "sales", label: "Sales" },
   { id: "costing", label: "Costing" },
+  { id: "forecast", label: "Production Forecast" },
 ];
 const isTab = (v: unknown): v is Tab => TABS.some((t) => t.id === v);
 
@@ -271,7 +273,13 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {tab === "sales" ? <SalesTab {...tabProps} /> : <CostingTab range={range} refreshKey={refreshKey} onRetry={refresh} />}
+      {tab === "sales" ? (
+        <SalesTab {...tabProps} />
+      ) : tab === "costing" ? (
+        <CostingTab range={range} refreshKey={refreshKey} onRetry={refresh} />
+      ) : (
+        <ForecastTab range={range} refreshKey={refreshKey} onRetry={refresh} />
+      )}
 
       <footer className="pb-4 pt-2 text-center text-[11px] text-ink-3">
         Figures come live from ERPNext via the FastAPI proxy · auto-refresh reloads every panel on the interval set in the header · Refresh Now does it immediately
