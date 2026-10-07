@@ -1071,8 +1071,10 @@ export interface PlanItem {
   /** qty sold on each of the days used (ISO date -> qty) */
   by_date: Record<string, number>;
   avg_qty: number;
-  /** average rounded up to whole units */
+  /** average rounded up to whole units (for source "net": average minus outlet stock, never below zero) */
   suggested_qty: number;
+  /** qty the outlet holds right now (source "net" only) */
+  outlet_stock: number | null;
   last_week_qty: number;
   max_qty: number;
   min_qty: number;
@@ -1089,11 +1091,13 @@ export interface NextDayPlan {
   weeks: number;
   /** same_weekday = average of past same weekdays; recent_days = fallback when none traded */
   basis: "same_weekday" | "recent_days";
+  plan_on: "sales" | "production" | "net";
+  outlets: string[];
   lookback_weeks: number;
   dates_used: string[];
   dates_skipped: { date: string; reason: string }[];
   items: PlanItem[];
   by_department: { department: string; suggested_qty: number; avg_sales: number; products: number }[];
-  totals: { suggested_qty: number; avg_sales: number; products: number; last_week_qty: number; last_week_sales: number };
+  totals: { suggested_qty: number; avg_sales: number; products: number; last_week_qty: number; last_week_sales: number; avg_qty: number; outlet_stock: number | null };
   cached?: boolean;
 }

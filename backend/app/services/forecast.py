@@ -66,7 +66,14 @@ async def next_day_plan(plan_date: date | None = None, weeks: int = 4, refresh: 
     # look back far enough to find `weeks` same-weekday trading days (bills are keyed in batches, so many
     # calendar days have none); the window also feeds the fallback and the department mapping
     window = DateRange(plan - timedelta(days=7 * max_weeks), plan - timedelta(days=1))
-    sold, se = await asyncio.gather(_sold_by_day(window), costing._production_frame(window, refresh))
+    sold, se, st = await asyncio.gather(_sold_by_day(window), costing._production_frame(window, refresh), costing._stock_frame(refresh))
+    # "net": the sales average minus what the outlet already holds (physical stock right now)
+    outlet_stock: dict[str, float] = {}
+    outlet_names: list[str] = []
+    if source == "net" and not st.empty:
+        at_outlet = st[st["warehouse"].map(costing.outlet_label).str.contains("outlet", case=False)]
+        outlet_names = sorted(set(at_outlet["warehouse"].map(costing.outlet_label)))
+        outlet_stock = {str(k): float(v) for k, v in at_outlet.groupby("item_code")["qty"].sum().items()}
     if source == "production":
         made = se[se["kind"] == "produced"] if not se.empty else se
         sold = made.assign(date=made["date"].dt.strftime("%Y-%m-%d")).groupby(["date", "item_code"], as_index=False).agg(
@@ -96,7 +103,7 @@ async def next_day_plan(plan_date: date | None = None, weeks: int = 4, refresh: 
             p = produced.assign(dept=produced["parent"].map(owner)).dropna(subset=["dept"]).sort_values("date")
             dept_of = {str(k): str(v) for k, v in p.groupby("item_code")["dept"].last().items()}
 
-    empty = {"source": "stock_entry" if source == "production" else "pos_invoice_item", "plan_on": source, "plan_date": plan.isoformat(), "weekday": weekday, "weeks": weeks, "basis": basis,
+    empty = {"source": "stock_entry" if source == "production" else "pos_invoice_item", "plan_on": source, "outlets": outlet_names, "plan_date": plan.isoformat(), "weekday": weekday, "weeks": weeks, "basis": basis,
              "lookback_weeks": max_weeks, "dates_used": used_iso, "dates_skipped": skipped, "items": [], "totals": {"suggested_qty": 0, "avg_sales": 0.0, "products": 0, "last_week_qty": 0.0, "last_week_sales": 0.0},
              "by_department": []}
     if n == 0 or sold.empty:
@@ -124,7 +131,9 @@ async def next_day_plan(plan_date: date | None = None, weeks: int = 4, refresh: 
             "item_code": code, "item_name": m["item_name"], "item_group": m["item_group"], "uom": m["uom"],
             "department": dept_of.get(code, "Bought in"),
             "by_date": {d: round(float(q[d]), 3) for d in used_iso},
-            "avg_qty": round(avg, 2), "suggested_qty": int(math.ceil(avg - 1e-9)),
+            "avg_qty": round(avg, 2),
+            "suggested_qty": int(max(0.0, math.ceil(avg - outlet_stock.get(code, 0.0) - 1e-9))) if source == "net" else int(math.ceil(avg - 1e-9)),
+            "outlet_stock": round(outlet_stock.get(code, 0.0), 3) if source == "net" else None,
             "last_week_qty": round(float(q[last]), 3), "max_qty": round(float(q.max()), 3), "min_qty": round(float(q.min()), 3),
             "days_sold": int((q > 0).sum()), "avg_sales": round(avg_amt, 2),
             "avg_price": round(float(a.sum()) / float(q.sum()), 2) if q.sum() else 0.0,
@@ -142,5 +151,7 @@ async def next_day_plan(plan_date: date | None = None, weeks: int = 4, refresh: 
         "totals": {
             "suggested_qty": int(df["suggested_qty"].sum()), "avg_sales": round(float(df["avg_sales"].sum()), 2), "products": int(len(df)),
             "last_week_qty": round(float(df["last_week_qty"].sum()), 3), "last_week_sales": round(float(amt_pivot[last].sum()), 2),
+            "avg_qty": round(float(df["avg_qty"].sum()), 2),
+            "outlet_stock": round(float(df["outlet_stock"].fillna(0).sum()), 3) if source == "net" else None,
         },
     }

@@ -31,8 +31,9 @@ function short(dept: string): string {
  * Tomorrow's production plan: for the plan date's weekday, the average of what sold on that weekday over the
  * last four weeks, per product, with the four days shown so the pattern is visible. The plan date can be changed.
  */
-export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshKey: number; source?: "sales" | "production" }) {
+export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshKey: number; source?: "sales" | "production" | "net" }) {
   const onProduction = source === "production";
+  const onNet = source === "net";
   const noun = onProduction ? "production entries" : "bills";
   const verb = onProduction ? "made" : "sold";
   const [planDate, setPlanDate] = useState<string>(tomorrowIso);
@@ -76,7 +77,7 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
       return { name, items, units: items.reduce((s, r) => s + r.suggested_qty, 0), value: items.reduce((s, r) => s + r.avg_sales, 0) };
     });
   const dates = d?.dates_used ?? [];
-  const nCols = dates.length + 5;
+  const nCols = dates.length + (onNet ? 6 : 5);
   const sameDay = d?.basis === "same_weekday";
 
   const cols: CsvColumn<PlanItem>[] = [
@@ -87,6 +88,7 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
     { key: "uom", header: "UOM", value: (r) => r.uom },
     ...dates.map((dt) => ({ key: dt, header: `${onProduction ? "Made" : "Sold"} ${fmtDate(dt)}`, value: (r: PlanItem) => r.by_date[dt] ?? 0 })),
     { key: "avg_qty", header: "Average qty", value: (r) => r.avg_qty },
+    ...(onNet ? [{ key: "outlet_stock", header: "Outlet stock now", value: (r: PlanItem) => r.outlet_stock ?? 0 }] : []),
     { key: "suggested_qty", header: "Suggested qty", value: (r) => r.suggested_qty },
     { key: "last_week_qty", header: "Last same day qty", value: (r) => r.last_week_qty },
     { key: "trend", header: "Trend %", value: (r) => r.trend_pct },
@@ -95,7 +97,7 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
   ];
   const onExport = (fmt: ExportFormat) => {
     if (!d) return;
-    const stem = `production-plan-${onProduction ? "on-production" : "on-sales"}-${d.plan_date}`;
+    const stem = `production-plan-${onProduction ? "on-production" : onNet ? "net-of-stock" : "on-sales"}-${d.plan_date}`;
     if (fmt === "csv") return exportTable("csv", stem, rows, cols);
     void downloadWorkbook(`${stem}.xlsx`, [
       { name: "Plan", title: `Production plan · ${d.weekday} ${fmtDate(d.plan_date)}`, subtitle: `${sameDay ? `average of the last ${dates.length} ${d.weekday}s` : `average of the last ${dates.length} trading days`}: ${dates.map(fmtDate).join(", ")}`, columns: cols, rows, totals: true, noTotal: ["days_sold", "avg_qty", "last_week_qty"] },
@@ -104,7 +106,7 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
 
   return (
     <Card
-      title={onProduction ? "Kal ka Production Plan · production ke hisaab se" : "Kal ka Production Plan · sale ke hisaab se"}
+      title={onProduction ? "Kal ka Production Plan · production ke hisaab se" : onNet ? "Kal ka Production Plan · outlet stock minus kar ke" : "Kal ka Production Plan · sale ke hisaab se"}
       subtitle={
         d
           ? `${d.weekday} ${fmtDate(d.plan_date)} · ${sameDay ? `average of what was ${verb} on the last ${num(dates.length)} ${d.weekday}s with ${noun}` : `no past ${d.weekday} had ${noun} in ${num(d.lookback_weeks)} weeks, so the last ${num(dates.length)} days with ${noun} are used`}: ${dates.map((x) => fmtDate(x).slice(0, 6)).join(", ")}`
@@ -133,9 +135,9 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <div className="rounded-lg border border-line px-3 py-2">
-              <div className="text-[10px] font-medium uppercase tracking-wide text-ink-3">Suggested total</div>
+              <div className="text-[10px] font-medium uppercase tracking-wide text-ink-3">{onNet ? "Make after stock" : "Suggested total"}</div>
               <div className="tnum text-lg font-semibold text-ink">{num(d.totals.suggested_qty)} <span className="text-xs font-normal text-ink-3">units</span></div>
-              <div className="tnum text-[11px] text-ink-3">{num(d.totals.products)} products</div>
+              <div className="tnum text-[11px] text-ink-3">{onNet ? `avg ${num(d.totals.avg_qty)} − outlet stock ${num(d.totals.outlet_stock ?? 0)} · ${num(d.totals.products)} products` : `${num(d.totals.products)} products`}</div>
             </div>
             <div className="rounded-lg border border-line px-3 py-2">
               <div className="text-[10px] font-medium uppercase tracking-wide text-ink-3">{onProduction ? "Produced value" : "Expected sales"}</div>
@@ -176,7 +178,8 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
                     <th key={dt} className={`${th} text-right`} title={dt}>{fmtDate(dt).slice(0, 6)}</th>
                   ))}
                   <th className={`${th} text-right`}>Average</th>
-                  <th className={`${th} text-right`} title="average rounded up to whole units">Make</th>
+                  {onNet && <th className={`${th} text-right`} title={`physical stock right now at ${d.outlets.join(", ") || "the outlet"}`}>Outlet stock</th>}
+                  <th className={`${th} text-right`} title={onNet ? "average minus outlet stock, rounded up, never below zero" : "average rounded up to whole units"}>Make</th>
                   <th className={`${th} text-right`} title="the two most recent weeks against the two before">Trend</th>
                   <th className={`${th} text-right`}>{onProduction ? "Produced value" : "Expected sales"}</th>
                 </tr>
@@ -201,7 +204,8 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
                           <td key={dt} className={tdNum}>{r.by_date[dt] ? num(r.by_date[dt], 1) : <span className="text-ink-3">—</span>}</td>
                         ))}
                         <td className={tdNum}>{num(r.avg_qty, 1)}</td>
-                        <td className="py-1.5 text-right text-base font-semibold text-ink">{num(r.suggested_qty)}</td>
+                        {onNet && <td className={`py-1.5 text-right ${(r.outlet_stock ?? 0) >= r.avg_qty && r.avg_qty > 0 ? "text-good" : "text-ink-2"}`}>{r.outlet_stock ? num(r.outlet_stock, 1) : <span className="text-ink-3">—</span>}</td>}
+                        <td className={`py-1.5 text-right text-base font-semibold ${r.suggested_qty === 0 ? "text-ink-3" : "text-ink"}`}>{num(r.suggested_qty)}</td>
                         <td className="py-1.5 text-right"><DeltaText value={r.trend_pct} /></td>
                         <td className={tdNum}>{pkr(r.avg_sales)}</td>
                       </tr>
@@ -212,7 +216,7 @@ export default function NextDayPlan({ refreshKey, source = "sales" }: { refreshK
             </table>
           </div>
           <p className="text-[11px] text-ink-3">
-            Make = average of the days shown, rounded up. A day with {noun} but none of an item counts as zero; days with no {noun} at all and bulk-entry days are skipped.{" "}
+            {onNet ? `Make = average of the days shown minus the outlet's physical stock right now (${d.outlets.join(", ") || "outlet"}), rounded up; zero when the outlet already holds enough. ` : "Make = average of the days shown, rounded up. "}A day with {noun} but none of an item counts as zero; days with no {noun} at all and bulk-entry days are skipped.{" "}
             {onProduction ? "Quantities come from production (Repack) entries in each product's stock unit, so this repeats what the bakery actually made on those days; bought-in items do not appear here." : "Quantities are in each product's stock unit, taken from bills, so they include bought-in items (shown as \"Bought in\")."}
           </p>
         </div>

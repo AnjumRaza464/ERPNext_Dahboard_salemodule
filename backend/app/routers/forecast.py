@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 async def forecast_next_day(
     date: date | None = Query(default=None, description="the day to plan for; default = tomorrow (Asia/Karachi)"),
     weeks: int = Query(default=4, ge=1, le=12, description="how many past same-weekdays to average"),
-    source: str = Query(default="sales", pattern="^(sales|production)$", description="sales = what sold on those days; production = what was produced"),
+    source: str = Query(default="sales", pattern="^(sales|production|net)$", description="sales = what sold on those days; production = what was produced; net = sales minus the outlet's current stock"),
     refresh: bool = False,
 ):
     """Production plan for one day: the average of what sold on the same weekday over the last N weeks, per product."""
