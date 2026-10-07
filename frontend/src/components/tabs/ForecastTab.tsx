@@ -15,6 +15,7 @@ export default function ForecastTab({ refreshKey }: Props) {
     <div className="flex flex-col gap-4">
       <NextDayPlan refreshKey={refreshKey} source="sales" />
       <NextDayPlan refreshKey={refreshKey} source="production" />
+      <NextDayPlan refreshKey={refreshKey} source="net" />
     </div>
   );
 }
