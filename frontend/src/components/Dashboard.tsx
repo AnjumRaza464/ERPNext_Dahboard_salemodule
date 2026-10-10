@@ -10,6 +10,7 @@ import { useAutoRefresh } from "@/hooks/useAutoRefresh";
 import { AutoRefreshControl, DASHBOARD_INTERVALS, parseIntervalEnv, RefreshCountdown, withDefault } from "./AutoRefreshControl";
 import DateFilter from "./DateFilter";
 import CostingTab from "./tabs/CostingTab";
+import DeclineTab from "./tabs/DeclineTab";
 import ForecastTab from "./tabs/ForecastTab";
 import SalesTab from "./tabs/SalesTab";
 import VoiceAssistant from "./VoiceAssistant";
@@ -26,11 +27,12 @@ const DEFAULT_AUTO_REFRESH = parseIntervalEnv(process.env.NEXT_PUBLIC_AUTO_REFRE
 const AUTO_REFRESH_OPTIONS = withDefault(DASHBOARD_INTERVALS, DEFAULT_AUTO_REFRESH);
 
 // Top-level dashboard tabs. The date range in the control bar applies to whichever tab is open.
-type Tab = "sales" | "costing" | "forecast";
+type Tab = "sales" | "costing" | "forecast" | "decline";
 const TABS: { id: Tab; label: string }[] = [
   { id: "sales", label: "Sales" },
   { id: "costing", label: "Costing" },
   { id: "forecast", label: "Production Forecast" },
+  { id: "decline", label: "Sales Decline & Cost Increase" },
 ];
 const isTab = (v: unknown): v is Tab => TABS.some((t) => t.id === v);
 
@@ -277,8 +279,10 @@ export default function Dashboard() {
         <SalesTab {...tabProps} />
       ) : tab === "costing" ? (
         <CostingTab range={range} refreshKey={refreshKey} onRetry={refresh} />
-      ) : (
+      ) : tab === "forecast" ? (
         <ForecastTab range={range} refreshKey={refreshKey} onRetry={refresh} />
+      ) : (
+        <DeclineTab range={range} refreshKey={refreshKey} onRetry={refresh} />
       )}
 
       <footer className="pb-4 pt-2 text-center text-[11px] text-ink-3">
