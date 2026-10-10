@@ -1101,3 +1101,155 @@ export interface NextDayPlan {
   totals: { suggested_qty: number; avg_sales: number; products: number; last_week_qty: number; last_week_sales: number; avg_qty: number; outlet_stock: number | null };
   cached?: boolean;
 }
+
+// ---------------------------------------------------------------- sales decline factors
+
+export interface DeclineTotals {
+  net: number;
+  checks: number;
+  avg_check: number;
+  qty: number;
+  active_days: number;
+  calendar_days: number;
+  avg_per_active_day: number;
+  discounts: number;
+  returns: number;
+  return_count: number;
+}
+
+export interface DeclineComparison {
+  range: Range;
+  net: number;
+  checks: number;
+  avg_check: number;
+  delta_abs: number;
+  delta_pct: number | null;
+}
+
+export interface MissingItem {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  prev_qty: number;
+  prev_amount: number;
+  last_week_amount: number;
+  last_month_amount: number;
+  outlet_stock: number;
+  produced_qty: number;
+  reason: string;
+}
+
+export interface DecliningItem {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  qty: number;
+  amount: number;
+  prev_qty: number;
+  prev_amount: number;
+  delta_abs: number;
+  delta_pct: number | null;
+  last_week_amount: number;
+  vs_last_week_pct: number | null;
+  last_month_amount: number;
+  vs_last_month_pct: number | null;
+  outlet_stock: number;
+}
+
+export interface DeclineFactor {
+  key: "traffic" | "basket" | "trading_days" | "stock_out" | "item_decline" | "discounts";
+  title: string;
+  /** estimated PKR effect on net sales vs the previous window; negative = pulled sales down */
+  impact: number;
+  share_pct: number;
+  direction: "down" | "up" | "flat";
+  metric: { label: string; current: number | null; previous: number | null; last_week: number | null; last_month: number | null; delta_pct: number | null };
+  detail: string;
+  items: (MissingItem | DecliningItem)[];
+}
+
+export interface DeclineFactors {
+  source: Source;
+  range: Range;
+  current: DeclineTotals;
+  comparisons: { previous: DeclineComparison; last_week: DeclineComparison; last_month: DeclineComparison };
+  decline_abs: number;
+  decline_pct: number | null;
+  factors: DeclineFactor[];
+  gains: { item_code: string; item_name: string; item_group: string; amount: number; prev_amount: number; delta_abs: number }[];
+  gains_total: number;
+  cached?: boolean;
+}
+
+// ---------------------------------------------------------------- cost increase factors
+
+export interface CostTotals {
+  net: number;
+  consumed: number;
+  produced: number;
+  cost_pct: number | null;
+  material_per_100_output: number | null;
+}
+
+export interface CostComparison {
+  range: Range;
+  net: number;
+  consumed: number;
+  cost_pct: number | null;
+  delta_pts: number | null;
+}
+
+export interface RateRow {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  qty: number;
+  rate: number;
+  prev_rate: number;
+  rate_change_pct: number | null;
+  /** (rate now - rate before) x qty now, PKR */
+  effect: number;
+}
+
+export interface UsageRow {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  qty: number;
+  prev_qty: number;
+  qty_change_pct: number | null;
+  amount: number;
+  prev_amount: number;
+  /** (qty now - qty before) x rate before, PKR */
+  effect: number;
+}
+
+export interface CostFactor {
+  key: "rates" | "efficiency" | "sales" | "waste" | "writeoffs" | "volume";
+  title: string;
+  /** estimated PKR effect on material cost vs the previous window; positive = pushed cost up */
+  impact: number;
+  impact_pts: number | null;
+  share_pct: number;
+  direction: "up" | "down" | "flat";
+  metric: { label: string; current: number | null; previous: number | null; last_week: number | null; last_month: number | null; delta_pct: number | null };
+  detail: string;
+  items: (RateRow | UsageRow)[];
+}
+
+export interface CostFactors {
+  source: Source;
+  range: Range;
+  current: CostTotals;
+  previous: CostTotals;
+  comparisons: { previous: CostComparison; last_week: CostComparison; last_month: CostComparison };
+  change_pts: number | null;
+  material_effect_pts: number | null;
+  sales_effect_pts: number | null;
+  factors: CostFactor[];
+  cheaper: RateRow[];
+  cheaper_total: number;
+  cached?: boolean;
+}
