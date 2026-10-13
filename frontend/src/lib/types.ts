@@ -1253,3 +1253,118 @@ export interface CostFactors {
   cheaper_total: number;
   cached?: boolean;
 }
+
+// ------------------------------------------------------------------ Stock tracking tab
+
+export type StockStatus = "ok" | "low" | "out" | "idle" | "empty";
+
+/** One item in one warehouse: balance at the start and end of the range, movement inside it, and the balance right now. */
+export interface StockTrackRow {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  warehouse: string;
+  uom: string;
+  opening_qty: number;
+  in_qty: number;
+  out_qty: number;
+  closing_qty: number;
+  current_qty: number;
+  opening_value: number;
+  in_value: number;
+  out_value: number;
+  closing_value: number;
+  current_value: number;
+  /** current valuation rate */
+  rate: number;
+  /** ledger lines in the range */
+  lines: number;
+  /** average units out per day over the range */
+  daily_out: number;
+  /** current qty / daily out; null when nothing went out or nothing is left */
+  days_cover: number | null;
+  last_movement: string | null;
+  idle_days: number | null;
+  status: StockStatus;
+}
+
+export interface StockRollup {
+  opening_value: number;
+  in_value: number;
+  out_value: number;
+  net_value: number;
+  closing_value: number;
+  current_value: number;
+  items: number;
+  low: number;
+  out: number;
+}
+
+export interface StockKindRow {
+  kind: string;
+  in_value: number;
+  out_value: number;
+  net_value: number;
+  in_qty: number;
+  out_qty: number;
+  entries: number;
+  lines: number;
+  items: number;
+}
+
+export interface StockDay {
+  date: string;
+  in_value: number;
+  out_value: number;
+  net_value: number;
+  in_qty: number;
+  out_qty: number;
+  entries: number;
+  lines: number;
+  /** stock value at the end of the day (opening + running net) */
+  balance_value: number;
+}
+
+export interface StockEntryRow {
+  date: string;
+  time: string;
+  kind: string;
+  voucher_no: string;
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  warehouse: string;
+  uom: string;
+  qty: number;
+  qty_after: number;
+  rate: number;
+  value: number;
+}
+
+export interface StockTracking extends Base {
+  as_of: string;
+  granularity: "day" | "month";
+  summary: {
+    opening_value: number;
+    in_value: number;
+    out_value: number;
+    net_value: number;
+    closing_value: number;
+    current_value: number;
+    in_qty: number;
+    out_qty: number;
+    items: number;
+    warehouses: number;
+    entries: number;
+    lines: number;
+    low: number;
+    out: number;
+    idle: number;
+  };
+  by_warehouse: (StockRollup & { warehouse: string })[];
+  by_group: (StockRollup & { item_group: string })[];
+  by_kind: StockKindRow[];
+  daily: StockDay[];
+  items: StockTrackRow[];
+  entries: StockEntryRow[];
+}

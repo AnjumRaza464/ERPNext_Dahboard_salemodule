@@ -19,6 +19,7 @@ from .routers import costing as costing_router
 from .routers import decline as decline_router
 from .routers import forecast as forecast_router
 from .routers import sales as sales_router
+from .routers import stock as stock_router
 from .routers import voice as voice_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -52,6 +53,7 @@ app.include_router(sales_router.router)
 app.include_router(costing_router.router)
 app.include_router(forecast_router.router)
 app.include_router(decline_router.router)
+app.include_router(stock_router.router)
 app.include_router(voice_router.router)
 
 
