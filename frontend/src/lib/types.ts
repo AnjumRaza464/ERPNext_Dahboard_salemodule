@@ -1368,3 +1368,204 @@ export interface StockTracking extends Base {
   items: StockTrackRow[];
   entries: StockEntryRow[];
 }
+
+// ------------------------------------------------------------------ Purchase analysis (Stock Tracking tab)
+
+export interface PurchaseTopItem {
+  item_code: string;
+  item_name: string;
+  amount: number;
+}
+
+/** Average / lowest / highest / last paid rate over the non-return lines of one item (or supplier x item). */
+export interface PurchaseRateStats {
+  avg_rate: number;
+  min_rate: number | null;
+  max_rate: number | null;
+  last_rate: number | null;
+  last_date: string | null;
+  first_date: string | null;
+}
+
+export interface PurchaseSupplierRow {
+  supplier: string;
+  amount: number;
+  share_pct: number;
+  qty: number;
+  invoices: number;
+  returns: number;
+  items: number;
+  lines: number;
+  active_days: number;
+  first_date: string;
+  last_date: string;
+  avg_per_invoice: number;
+  avg_per_active_day: number;
+  groups: string;
+  warehouses: string;
+  weekdays: string;
+  top_item: PurchaseTopItem | null;
+  /** PKR bought from this supplier on each weekday (Mon … Sun) */
+  by_weekday: Record<string, number>;
+  prev_amount: number;
+  delta_pct: number | null;
+}
+
+export interface PurchaseRollup {
+  amount: number;
+  share_pct: number;
+  qty: number;
+  items: number;
+  invoices: number;
+  suppliers: number;
+  lines: number;
+  active_days: number;
+  supplier_names: string;
+  top_item: PurchaseTopItem | null;
+}
+
+export interface PurchaseWeekdayRow {
+  weekday: string;
+  amount: number;
+  share_pct: number;
+  invoices: number;
+  items: number;
+  suppliers: number;
+  /** calendar days of this weekday in the range */
+  days: number;
+  /** days of this weekday on which something was bought */
+  active_days: number;
+  avg_per_active_day: number;
+  avg_per_day: number;
+  by_supplier: Record<string, number>;
+  top_item: PurchaseTopItem | null;
+}
+
+export interface PurchaseDayRow {
+  period: string;
+  weekday: string;
+  total: number;
+  cum_total: number;
+  invoices: number;
+  suppliers: number;
+  items: number;
+  lines: number;
+  qty: number;
+  by_supplier: Record<string, number>;
+  top_item: PurchaseTopItem | null;
+  supplier_names: string;
+}
+
+export interface PurchaseItemRow extends PurchaseRateStats {
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  qty: number;
+  amount: number;
+  share_pct: number;
+  invoices: number;
+  lines: number;
+  active_days: number;
+  suppliers: number;
+  supplier_names: string;
+  main_supplier: string | null;
+  main_supplier_share_pct: number;
+  warehouses: string;
+  weekdays: string;
+  prev_amount: number;
+  prev_qty: number;
+  delta_pct: number | null;
+  prev_rate: number | null;
+  rate_change_pct: number | null;
+}
+
+export interface PurchaseSupplierItemRow extends PurchaseRateStats {
+  supplier: string;
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  uom: string;
+  qty: number;
+  amount: number;
+  share_of_supplier_pct: number;
+  share_of_total_pct: number;
+  invoices: number;
+  lines: number;
+  active_days: number;
+  /** every date this supplier delivered this item */
+  dates: string[];
+  weekdays: string;
+}
+
+export interface PurchaseInvoiceRow {
+  name: string;
+  date: string;
+  weekday: string;
+  supplier: string;
+  is_return: boolean;
+  warehouse: string;
+  amount: number;
+  qty: number;
+  items: number;
+  lines: number;
+  groups: string;
+  top_item: PurchaseTopItem | null;
+}
+
+export interface PurchaseLineRow {
+  date: string;
+  weekday: string;
+  invoice: string;
+  supplier: string;
+  is_return: boolean;
+  item_code: string;
+  item_name: string;
+  item_group: string;
+  warehouse: string;
+  uom: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
+
+export interface PurchaseAnalysis extends Base {
+  previous_range: Range;
+  granularity: "day" | "month";
+  /** weekday filter applied on the server (empty = all days) */
+  weekdays: string[];
+  summary: {
+    total: number;
+    prev_total: number;
+    delta_pct: number | null;
+    invoices: number;
+    returns: number;
+    return_amount: number;
+    suppliers: number;
+    items: number;
+    lines: number;
+    qty: number;
+    active_days: number;
+    days: number;
+    avg_per_invoice: number;
+    avg_per_active_day: number;
+    avg_per_day: number;
+    largest_invoice: { name: string; date: string; supplier: string; amount: number } | null;
+    top_supplier: { supplier: string; amount: number; share_pct: number } | null;
+    top_item: { item_code: string; item_name: string; amount: number; share_pct: number; main_supplier: string | null } | null;
+    top_group: { item_group: string; amount: number; share_pct: number } | null;
+    first_date: string | null;
+    last_date: string | null;
+  };
+  /** supplier names in descending order of amount (chart series order) */
+  suppliers: string[];
+  by_supplier: PurchaseSupplierRow[];
+  by_group: (PurchaseRollup & { item_group: string })[];
+  by_warehouse: (PurchaseRollup & { warehouse: string })[];
+  by_weekday: PurchaseWeekdayRow[];
+  daily: PurchaseDayRow[];
+  items: PurchaseItemRow[];
+  supplier_items: PurchaseSupplierItemRow[];
+  invoices: PurchaseInvoiceRow[];
+  lines: PurchaseLineRow[];
+}
