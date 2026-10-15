@@ -6,8 +6,11 @@ Sales Invoice is one till closing, so it is only used where documents themselves
 listed (invoice table, composition). All counts, averages and per-day statistics are
 built on two shared, cached frames:
 
-* `_check_days(rng)`  - one row per posting date (bills, net sales, qty, gross, discounts)
+* `_check_days(rng)`  - one row per business date (bills, net sales, qty, gross, discounts)
 * `_item_frame(rng)`  - one row per item sold (qty, amount, group)
+
+Every figure is dated by **business day** = the period end date of the bill's POS Closing
+Entry (`live.bills`), not by the posting date, which is only the day the bill was keyed in.
 
 Derived statistics (averages, best/lowest day, baselines) leave out the dates listed in
 `EXCLUDE_DATES_FROM_STATS` (opening / bulk stock entries); totals never do.
@@ -36,7 +39,7 @@ INVOICE_FIELDS = [
 ]
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 WEEKDAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-DATA_FROM = date(2026, 4, 13)  # Monday of the first week with bills
+DATA_FROM = date(2026, 3, 30)  # Monday of the first week with bills (first closing: 31 Mar 2026)
 COMPARE_MODES = ("previous", "last_week", "last_year", "custom")
 
 # Item lines live in a child table per source; parent-in chunks are mandatory (no parent-field filters).
@@ -48,15 +51,13 @@ ITEM_CHUNK = 200
 DAY_COLS = ["date", "hour", "time", "n", "total", "gross", "discounts", "qty", "is_return"]
 
 
-def _base_filters(rng: DateRange) -> list[list[Any]]:
-    """Filters for the Sales Invoice doctype (document listings only)."""
-    c = get_client()
-    return [
-        ["docstatus", "=", 1],
-        ["company", "=", c.company],
-        ["posting_date", ">=", rng.start.isoformat()],
-        ["posting_date", "<=", rng.end.isoformat()],
-    ]
+async def _sale_names(rng: DateRange, refresh: bool = False) -> dict[str, dict[str, str]]:
+    """{doctype: {bill name: business date}} for the non-return bills in the range (parent-in lookups)."""
+    out: dict[str, dict[str, str]] = {dt: {} for dt, _, _ in ITEM_SOURCES}
+    for r in await live.bills(rng, ["is_return"], refresh=refresh):
+        if not int(r.get("is_return") or 0):
+            out[r["doctype"]][r["name"]] = r["business_date"]
+    return out
 
 
 def outlet_label(cost_center: str | None, pos_profile: str | None = None, warehouse: str | None = None) -> str:
@@ -86,8 +87,8 @@ def _refresh_ok(rng: DateRange, refresh: bool) -> bool:
 # ------------------------------------------------------------------ shared frames
 
 async def _check_days(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
-    """Bills aggregated per posting date x is_return, over live.SOURCES (cached)."""
-    rows, _ = await cached(f"sales:days:{rng.key()}", lambda: live._rows(rng, hourly=False), refresh=_refresh_ok(rng, refresh))
+    """Bills aggregated per business date x is_return, over live.SOURCES (cached)."""
+    rows, _ = await cached(f"sales:days:{rng.key()}", lambda: live._rows(rng, hourly=False, refresh=refresh), refresh=_refresh_ok(rng, refresh))
     df = pd.DataFrame(rows, columns=DAY_COLS)
     for col in ("n", "total", "gross", "discounts", "qty", "is_return"):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
@@ -96,7 +97,7 @@ async def _check_days(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
 
 async def _check_rows(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
     """One row per bill with its (entry) hour, over live.SOURCES (cached)."""
-    rows, _ = await cached(f"sales:rows:{rng.key()}", lambda: live._rows(rng, hourly=True), refresh=_refresh_ok(rng, refresh))
+    rows, _ = await cached(f"sales:rows:{rng.key()}", lambda: live._rows(rng, hourly=True, refresh=refresh), refresh=_refresh_ok(rng, refresh))
     df = pd.DataFrame(rows, columns=DAY_COLS)
     for col in ("n", "total", "gross", "discounts", "qty", "is_return"):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
@@ -268,14 +269,14 @@ async def kpis(rng: DateRange, mode: str = "previous", cmp_start: date | None = 
 
 
 async def invoices(rng: DateRange) -> dict[str, Any]:
-    rows = await get_client().get_all(
-        "Sales Invoice", INVOICE_FIELDS, _base_filters(rng), order_by="posting_date desc, posting_time desc",
-    )
+    rows = await live.sales_invoices(rng, INVOICE_FIELDS)
     for r in rows:
         r["outlet"] = outlet_label(r.get("cost_center"), r.get("pos_profile"), r.get("set_warehouse"))
         r["posting_time"] = fmt_time(r.get("posting_time"))
+        r["posting_date"] = str(r.get("posting_date"))
+    rows.sort(key=lambda r: (r["business_date"], r["posting_date"], r["posting_time"] or ""), reverse=True)
     return {"source": "sales_invoice", "range": rng.as_dict(), "count": len(rows), "invoices": rows,
-            "note": "one Sales Invoice = one till closing (several bills)"}
+            "note": "one Sales Invoice = one till closing (several bills); dated by the closing's period end"}
 
 
 async def trend(rng: DateRange) -> dict[str, Any]:
@@ -291,8 +292,9 @@ async def _item_frame(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
     async def _load() -> list[dict[str, Any]]:
         c = get_client()
         out: list[dict[str, Any]] = []
-        for parent_dt, child_dt, extra in ITEM_SOURCES:
-            names = [r["name"] for r in await c.get_all(parent_dt, ["name"], live._filters(rng, extra + [["is_return", "=", 0]]))]
+        by_doctype = await _sale_names(rng, refresh)
+        for parent_dt, child_dt, _ in ITEM_SOURCES:
+            names = list(by_doctype[parent_dt])
             if not names:
                 continue
             chunks = [names[i:i + ITEM_CHUNK] for i in range(0, len(names), ITEM_CHUNK)]
@@ -424,9 +426,9 @@ async def item_velocity(weeks: int = 4, limit: int = 30, end: date | None = None
     async def _load() -> list[dict[str, Any]]:
         c = get_client()
         out: list[dict[str, Any]] = []
-        for parent_dt, child_dt, extra in ITEM_SOURCES:
-            parents = await c.get_all(parent_dt, ["name", "posting_date"], live._filters(window, extra + [["is_return", "=", 0]]))
-            dates = {p["name"]: str(p["posting_date"]) for p in parents}
+        by_doctype = await _sale_names(window)
+        for parent_dt, child_dt, _ in ITEM_SOURCES:
+            dates = by_doctype[parent_dt]
             names = list(dates)
             if not names:
                 continue
@@ -481,15 +483,23 @@ async def item_velocity(weeks: int = 4, limit: int = 30, end: date | None = None
 
 # ------------------------------------------------------------------ outlets, customers, payments
 
+def _group_bills(bills: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Non-return bills summed per `keys` (total, invoice_count, last business date), largest first."""
+    groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for b in bills:
+        if int(b.get("is_return") or 0):
+            continue
+        k = tuple(b.get(x) for x in keys)
+        g = groups.setdefault(k, {**{x: b.get(x) for x in keys}, "total": 0.0, "invoice_count": 0, "last_invoice": ""})
+        g["total"] += float(b.get("base_grand_total") or 0)
+        g["invoice_count"] += 1
+        g["last_invoice"] = max(g["last_invoice"], b["business_date"])
+    return sorted(groups.values(), key=lambda g: -g["total"])
+
+
 async def by_outlet(rng: DateRange) -> dict[str, Any]:
-    rows = await get_client().get_list(
-        "POS Invoice",
-        ["cost_center", "pos_profile", "set_warehouse", "sum(base_grand_total) as total", "count(name) as invoice_count"],
-        live._filters(rng, [["is_return", "=", 0]]),
-        group_by="cost_center, pos_profile",
-        order_by="total desc",
-        limit_page_length=None,
-    )
+    bills = await live.bills(rng, ["cost_center", "pos_profile", "set_warehouse", "base_grand_total", "is_return"])
+    rows = _group_bills(bills, ("cost_center", "pos_profile", "set_warehouse"))
     outlets = []
     grand = sum(float(r.get("total") or 0) for r in rows)
     for r in rows:
@@ -507,11 +517,11 @@ async def by_outlet(rng: DateRange) -> dict[str, Any]:
 
 
 async def top_customers(rng: DateRange, limit: int = 10) -> dict[str, Any]:
-    rows = await get_client().get_list(
-        "POS Invoice",
-        ["customer", "customer_name", "sum(base_grand_total) as total", "count(name) as invoice_count", "max(posting_date) as last_invoice"],
-        live._filters(rng, [["is_return", "=", 0]]), group_by="customer", order_by="total desc", limit_page_length=None,
-    )
+    bills = await live.bills(rng, ["customer", "customer_name", "base_grand_total", "is_return"])
+    rows = _group_bills(bills, ("customer",))
+    names = {b.get("customer"): b.get("customer_name") for b in bills}
+    for r in rows:
+        r["customer_name"] = names.get(r["customer"])
     grand = sum(float(r.get("total") or 0) for r in rows)
     customers = []
     for r in rows[:limit]:
@@ -530,19 +540,20 @@ async def top_customers(rng: DateRange, limit: int = 10) -> dict[str, Any]:
 
 async def payment_modes(rng: DateRange) -> dict[str, Any]:
     c = get_client()
-    inv = await c.get_list(
-        "POS Invoice", ["name", "base_grand_total", "base_change_amount", "base_rounding_adjustment"],
-        live._filters(rng, [["is_return", "=", 0]]), limit_page_length=None,
-    )
-    names = [r["name"] for r in inv]
-    if not names:
+    inv = [r for r in await live.bills(rng, ["base_grand_total", "base_change_amount", "base_rounding_adjustment", "is_return"])
+           if not int(r.get("is_return") or 0)]
+    if not inv:
         return {"source": "pos_invoice", "range": rng.as_dict(), "modes": [], "total": 0.0}
-    chunks = [names[i:i + ITEM_CHUNK] for i in range(0, len(names), ITEM_CHUNK)]
-    results = await asyncio.gather(*[
-        c.get_list("Sales Invoice Payment", ["mode_of_payment", "sum(base_amount) as amount", "count(name) as n"],
-                   [["parent", "in", chunk]], group_by="mode_of_payment", parent="POS Invoice", limit_page_length=None)
-        for chunk in chunks
-    ])
+    # the payments child table has the same name on both bill doctypes; parent-in chunks per doctype
+    tasks = []
+    for parent_dt, _, _ in ITEM_SOURCES:
+        names = [r["name"] for r in inv if r["doctype"] == parent_dt]
+        tasks += [
+            c.get_list("Sales Invoice Payment", ["mode_of_payment", "sum(base_amount) as amount", "count(name) as n"],
+                       [["parent", "in", names[i:i + ITEM_CHUNK]]], group_by="mode_of_payment", parent=parent_dt, limit_page_length=None)
+            for i in range(0, len(names), ITEM_CHUNK)
+        ]
+    results = await asyncio.gather(*tasks)
     paid: dict[str, dict[str, float]] = {}
     for ch in results:
         for r in ch:
@@ -871,19 +882,17 @@ async def item_pareto(rng: DateRange, limit: int = 30) -> dict[str, Any]:
 
 async def composition(rng: DateRange) -> dict[str, Any]:
     """Gross -> discounts -> taxes -> returns -> net sales (API only; document-level Sales Invoice sums)."""
-    c = get_client()
-    rows = await c.get_list(
-        "Sales Invoice",
-        ["sum(base_total) as gross", "sum(base_discount_amount) as discount", "sum(base_net_total) as net",
-         "sum(base_total_taxes_and_charges) as taxes", "sum(base_grand_total) as grand", "count(name) as n"],
-        _base_filters(rng) + [["is_return", "=", 0]], limit_page_length=1,
-    )
-    ret = await c.get_list(
-        "Sales Invoice", ["sum(base_grand_total) as total", "count(name) as n"],
-        _base_filters(rng) + [["is_return", "=", 1]], limit_page_length=1,
-    )
-    r = rows[0] if rows else {}
-    rr = ret[0] if ret else {}
+    docs = await live.sales_invoices(rng, ["base_total", "base_discount_amount", "base_net_total", "base_total_taxes_and_charges",
+                                           "base_grand_total", "is_return"])
+    sales_docs = [d for d in docs if not int(d.get("is_return") or 0)]
+    ret_docs = [d for d in docs if int(d.get("is_return") or 0)]
+
+    def _sum(items: list[dict[str, Any]], field: str) -> float:
+        return sum(float(d.get(field) or 0) for d in items)
+
+    r = {"gross": _sum(sales_docs, "base_total"), "discount": _sum(sales_docs, "base_discount_amount"),
+         "taxes": _sum(sales_docs, "base_total_taxes_and_charges"), "grand": _sum(sales_docs, "base_grand_total"), "n": len(sales_docs)}
+    rr = {"total": _sum(ret_docs, "base_grand_total"), "n": len(ret_docs)}
     gross = float(r.get("gross") or 0)
     discount = float(r.get("discount") or 0)
     taxes = float(r.get("taxes") or 0)

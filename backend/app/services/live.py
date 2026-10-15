@@ -10,6 +10,13 @@ submitted at the till, before the closing entry creates the Sales Invoice.
 
 Note: posting_time is the time the bill was keyed into ERPNext (bills are entered in
 batches), not the moment the customer paid, so per-hour curves show entry progress.
+
+**Business date.** Bills are keyed into ERPNext one to several days after the trading
+day, so a bill's `posting_date` is the keying day, not the day it was sold. The day the
+owner means is the **POS Closing Entry's period end date**: every closed bill takes that
+date (`closing_index` / `bills`), and only bills not yet in a submitted closing, plus
+non-consolidated Sales Invoices, fall back to their posting date. Every figure on the
+Sales tab is dated this way.
 """
 from __future__ import annotations
 
@@ -32,20 +39,123 @@ SOURCES: tuple[tuple[str, list[list[Any]]], ...] = (
     ("POS Invoice", []),
     ("Sales Invoice", [["is_consolidated", "=", 0]]),
 )
+# Bills that have no closing entry yet, so their only date is the posting date.
+OPEN_SOURCES: tuple[tuple[str, list[list[Any]]], ...] = (
+    ("POS Invoice", [["status", "!=", "Consolidated"]]),
+    ("Sales Invoice", [["is_consolidated", "=", 0]]),
+)
 ROW_FIELDS = ["posting_date", "posting_time", "base_grand_total", "base_total", "base_discount_amount", "total_qty", "is_return"]
-DAY_FIELDS = [
-    "posting_date", "is_return", "count(name) as n", "sum(base_grand_total) as total", "sum(total_qty) as qty",
-    "sum(base_total) as gross", "sum(base_discount_amount) as discounts",
-]
+CLOSING_FIELDS = ["name", "period_end_date", "posting_date"]
+BILL_CHUNK = 200  # "name in [...]" filters per request (URL length)
 
 
 def _filters(rng: DateRange | None, extra: list[list[Any]] | None = None, dates: list[date] | None = None) -> list[list[Any]]:
+    """Posting-date filters (keying day). Use `bills()` for anything dated by business day."""
     f: list[list[Any]] = [["docstatus", "=", 1], ["company", "=", get_client().company]]
     if dates is not None:
         f.append(["posting_date", "in", [d.isoformat() for d in dates]])
     elif rng is not None:
         f += [["posting_date", ">=", rng.start.isoformat()], ["posting_date", "<=", rng.end.isoformat()]]
     return f + list(extra or [])
+
+
+def _chunks(names: list[str]) -> list[list[str]]:
+    return [names[i:i + BILL_CHUNK] for i in range(0, len(names), BILL_CHUNK)]
+
+
+# ------------------------------------------------------------------ business date (POS Closing Entry period end)
+
+def _closing_date(r: dict[str, Any]) -> str:
+    return str(r.get("period_end_date") or r.get("posting_date"))[:10]
+
+
+async def closing_index(refresh: bool = False) -> dict[str, Any]:
+    """Every submitted POS Closing Entry, as lookups keyed by document name (cached).
+
+    bills    -> {POS Invoice name: business date}  (period end date of its closing)
+    invoices -> {consolidated Sales Invoice / credit note name: business date}
+    dates    -> sorted business dates that have at least one closed bill
+    """
+
+    async def _load() -> dict[str, Any]:
+        c = get_client()
+        closings, refs, logs = await asyncio.gather(
+            c.get_all("POS Closing Entry", CLOSING_FIELDS, [["docstatus", "=", 1], ["company", "=", c.company]]),
+            c.get_all("POS Invoice Reference", ["parent", "pos_invoice"],
+                      [["parenttype", "=", "POS Closing Entry"], ["docstatus", "=", 1]], parent="POS Closing Entry"),
+            c.get_all("POS Invoice Merge Log", ["pos_closing_entry", "consolidated_invoice", "consolidated_credit_note"], [["docstatus", "=", 1]]),
+        )
+        by_closing = {r["name"]: _closing_date(r) for r in closings}
+        bills = {r["pos_invoice"]: by_closing[r["parent"]] for r in refs if r["parent"] in by_closing}
+        invoices: dict[str, str] = {}
+        for r in logs:
+            d = by_closing.get(r.get("pos_closing_entry") or "")
+            if not d:
+                continue
+            for key in ("consolidated_invoice", "consolidated_credit_note"):
+                if r.get(key):
+                    invoices[r[key]] = d
+        return {"bills": bills, "invoices": invoices, "dates": sorted(set(bills.values()))}
+
+    value, _ = await cached("live:closings", _load, refresh=refresh)
+    return value
+
+
+def _in_window(rng: DateRange | None, dates: list[date] | None):
+    wanted = {d.isoformat() for d in dates} if dates is not None else None
+    lo, hi = (rng.start.isoformat(), rng.end.isoformat()) if rng is not None else ("", "9999")
+
+    def check(d: str) -> bool:
+        return d in wanted if wanted is not None else lo <= d <= hi
+
+    return check
+
+
+async def _fetch_closed(doctype: str, names: list[str], fields: list[str]) -> list[dict[str, Any]]:
+    c = get_client()
+    base = [["docstatus", "=", 1], ["company", "=", c.company]]
+    chunks = await asyncio.gather(*[c.get_list(doctype, fields, base + [["name", "in", chunk]], limit_page_length=None) for chunk in _chunks(names)])
+    return [r for chunk in chunks for r in chunk]
+
+
+async def bills(rng: DateRange | None, fields: list[str], dates: list[date] | None = None, refresh: bool = False) -> list[dict[str, Any]]:
+    """Every bill whose business date is in `rng` (or on `dates`), from POS Invoice plus non-consolidated
+    Sales Invoice. Each row carries `doctype`, `name`, `posting_date` and `business_date`: the period end
+    date of the bill's POS Closing Entry, or the posting date while the bill has no closing yet."""
+    idx = await closing_index(refresh)
+    inside = _in_window(rng, dates)
+    want = list(dict.fromkeys([*fields, "name", "posting_date"]))
+    closed = [n for n, d in idx["bills"].items() if inside(d)]
+    c = get_client()
+    closed_rows, *open_chunks = await asyncio.gather(
+        _fetch_closed("POS Invoice", closed, want),
+        *[c.get_all(dt, want, _filters(rng, extra, dates)) for dt, extra in OPEN_SOURCES],
+    )
+    out: list[dict[str, Any]] = []
+    for r in closed_rows:
+        out.append({**r, "doctype": "POS Invoice", "business_date": idx["bills"][r["name"]]})
+    for (dt, _), chunk in zip(OPEN_SOURCES, open_chunks):
+        for r in chunk:
+            if dt == "POS Invoice" and r["name"] in idx["bills"]:
+                continue  # closed between the two queries; already counted above
+            out.append({**r, "doctype": dt, "business_date": str(r["posting_date"])})
+    return out
+
+
+async def sales_invoices(rng: DateRange, fields: list[str]) -> list[dict[str, Any]]:
+    """Submitted Sales Invoices dated by business day: consolidated ones through their closing entry,
+    the rest (direct sales) by posting date. Each row carries `business_date`."""
+    idx = await closing_index()
+    inside = _in_window(rng, None)
+    want = list(dict.fromkeys([*fields, "name", "posting_date"]))
+    closed = [n for n, d in idx["invoices"].items() if inside(d)]
+    closed_rows, open_rows = await asyncio.gather(
+        _fetch_closed("Sales Invoice", closed, want),
+        get_client().get_all("Sales Invoice", want, _filters(rng, [["is_consolidated", "=", 0]])),
+    )
+    out = [{**r, "business_date": idx["invoices"][r["name"]]} for r in closed_rows]
+    out += [{**r, "business_date": str(r["posting_date"])} for r in open_rows if r["name"] not in idx["invoices"]]
+    return out
 
 
 def _hour(value: Any) -> int | None:
@@ -78,34 +188,35 @@ def shift(rng: DateRange, days: int) -> DateRange:
 
 def _norm_row(r: dict[str, Any], hourly: bool) -> dict[str, Any]:
     return {
-        "date": str(r.get("posting_date")),
+        "date": r["business_date"],
         "hour": _hour(r.get("posting_time")) if hourly else None,
         "time": fmt_time(r.get("posting_time")) if hourly else None,
-        "n": 1 if hourly else int(r.get("n") or 0),
-        "total": float(r.get("base_grand_total" if hourly else "total") or 0),
-        "gross": float(r.get("base_total" if hourly else "gross") or 0),
-        "discounts": float(r.get("base_discount_amount" if hourly else "discounts") or 0),
-        "qty": float(r.get("total_qty" if hourly else "qty") or 0),
+        "n": 1,
+        "total": float(r.get("base_grand_total") or 0),
+        "gross": float(r.get("base_total") or 0),
+        "discounts": float(r.get("base_discount_amount") or 0),
+        "qty": float(r.get("total_qty") or 0),
         "is_return": int(r.get("is_return") or 0),
     }
 
 
-async def _rows(rng: DateRange | None, hourly: bool, dates: list[date] | None = None) -> list[dict[str, Any]]:
-    """Normalised bill rows for a range (or an explicit list of dates).
+async def _rows(rng: DateRange | None, hourly: bool, dates: list[date] | None = None, refresh: bool = False) -> list[dict[str, Any]]:
+    """Normalised bill rows for a range (or an explicit list of dates), dated by business day.
 
-    hourly=True  -> one row per bill (with its hour and time)
-    hourly=False -> one row per posting_date x is_return, aggregated by ERPNext
+    hourly=True  -> one row per bill (with its entry hour and time)
+    hourly=False -> one row per business date x is_return
     Keys: date, hour, time, n (bills), total (net PKR incl. returns), gross, discounts, qty, is_return.
     """
-    c = get_client()
+    rows = [_norm_row(r, hourly) for r in await bills(rng, ROW_FIELDS, dates, refresh)]
     if hourly:
-        chunks = await asyncio.gather(*[c.get_all(dt, ROW_FIELDS, _filters(rng, extra, dates)) for dt, extra in SOURCES])
-    else:
-        chunks = await asyncio.gather(*[
-            c.get_list(dt, DAY_FIELDS, _filters(rng, extra, dates), group_by="posting_date, is_return", limit_page_length=None)
-            for dt, extra in SOURCES
-        ])
-    return [_norm_row(r, hourly) for chunk in chunks for r in chunk]
+        return rows
+    agg: dict[tuple[str, int], dict[str, Any]] = {}
+    for r in rows:
+        a = agg.setdefault((r["date"], r["is_return"]), {**r, "n": 0, "total": 0.0, "gross": 0.0, "discounts": 0.0, "qty": 0.0})
+        a["n"] += 1
+        for k in ("total", "gross", "discounts", "qty"):
+            a[k] += r[k]
+    return list(agg.values())
 
 
 def _totals(rows: list[dict[str, Any]]) -> dict[str, float | int]:
@@ -162,16 +273,22 @@ def _cumulative_series(buckets: dict[int, dict[str, float]], keys: list[int]) ->
 
 
 async def _last_trading_day(before: date) -> str | None:
+    """Latest business date on or before `before` with a bill: the last closing's period end, or a
+    later posting date of a bill that has no closing yet."""
     c = get_client()
-    rows = await asyncio.gather(*[
-        c.get_list(
-            dt, ["max(posting_date) as d"],
-            [["docstatus", "=", 1], ["company", "=", c.company], ["posting_date", "<=", before.isoformat()], *extra],
-            limit_page_length=1,
-        )
-        for dt, extra in SOURCES
-    ])
-    days = [str(r[0]["d"]) for r in rows if r and r[0].get("d")]
+    idx, *rows = await asyncio.gather(
+        closing_index(),
+        *[
+            c.get_list(
+                dt, ["max(posting_date) as d"],
+                [["docstatus", "=", 1], ["company", "=", c.company], ["posting_date", "<=", before.isoformat()], *extra],
+                limit_page_length=1,
+            )
+            for dt, extra in OPEN_SOURCES
+        ],
+    )
+    days = [d for d in idx["dates"] if d <= before.isoformat()][-1:]
+    days += [str(r[0]["d"]) for r in rows if r and r[0].get("d")]
     return max(days) if days else None
 
 

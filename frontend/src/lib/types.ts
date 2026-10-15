@@ -62,6 +62,9 @@ export interface SalesKpis extends Base {
 
 export interface Invoice {
   name: string;
+  /** Trading day: the period end date of the POS Closing Entry that produced the invoice (posting date for direct sales). */
+  business_date: string;
+  /** Day the invoice was keyed into ERPNext. */
   posting_date: string;
   posting_time: string | null;
   customer: string;

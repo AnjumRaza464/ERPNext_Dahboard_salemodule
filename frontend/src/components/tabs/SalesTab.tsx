@@ -13,7 +13,6 @@ import GuardrailLine from "../GuardrailLine";
 import InvoicesTable from "../InvoicesTable";
 import KpiCard from "../KpiCard";
 import LiveCompare from "../LiveCompare";
-import MorningBrief from "../MorningBrief";
 import PmixTable from "../PmixTable";
 import SalesComparison, { lastYearUnavailable } from "../SalesComparison";
 import SalesSummary from "../SalesSummary";
@@ -435,7 +434,6 @@ export default function SalesTab({
         <SalesPaceRow pace={pace} onTargetChange={setTarget} />
       </div>
       <SalesSummary range={range} refreshKey={refreshKey} onRetry={onRetry} kpis={kpis} pace={pace} cmpLabel={CMP_LABEL[effectiveMode]} />
-      <MorningBrief refreshKey={refreshKey} target={target} />
       <LiveCompare refreshKey={refreshKey} onRetry={onRetry} command={liveCommand} />
       <WeeklyRhythm refreshKey={refreshKey} />
       <SectionHeading id={sectionId("comparison")} title="Comparison" hint="how this range stacks up against another period" />

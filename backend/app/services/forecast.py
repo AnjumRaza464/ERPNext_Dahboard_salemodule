@@ -31,9 +31,9 @@ async def _sold_by_day(rng: DateRange) -> pd.DataFrame:
     async def _load() -> list[dict[str, Any]]:
         c = get_client()
         out: list[dict[str, Any]] = []
-        for parent_dt, child_dt, extra in sales.ITEM_SOURCES:
-            parents = await c.get_all(parent_dt, ["name", "posting_date"], live._filters(rng, extra + [["is_return", "=", 0]]))
-            dates = {p["name"]: str(p["posting_date"]) for p in parents}
+        by_doctype = await sales._sale_names(rng)  # dated by business day (closing period end)
+        for parent_dt, child_dt, _ in sales.ITEM_SOURCES:
+            dates = by_doctype[parent_dt]
             names = list(dates)
             if not names:
                 continue
