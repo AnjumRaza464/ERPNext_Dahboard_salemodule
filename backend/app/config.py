@@ -24,7 +24,9 @@ class Settings(BaseSettings):
     # Days whose bills are opening / bulk stock entries rather than retail sales (single one-line
     # bills of PKR 500k+). Their totals stay in every sum and table, but they are left out of
     # derived statistics: best / lowest day, averages per bill or per day, weekday baselines.
-    exclude_dates_from_stats: str = "2026-04-16,2026-05-03,2026-05-05,2026-05-11,2026-06-02"
+    # These are BUSINESS dates (the POS Closing Entry period end the bill belongs to), not the
+    # day the bill was keyed in: ACC-PSINV-2026-00004 .. 00013.
+    exclude_dates_from_stats: str = "2026-03-31,2026-04-10,2026-04-19,2026-04-27,2026-05-04,2026-05-10,2026-05-20,2026-05-31"
     # Extra dates (closures, Eid) to leave out of the live board's 4-week same-weekday baseline.
     live_exclude_dates: str = ""
     # Monthly net-sales targets, e.g. "2026-10:4500000,default:4000000". The browser can override

@@ -7,7 +7,7 @@ import type { Invoice, InvoicesResponse } from "@/lib/types";
 import { EmptyState, ErrorState, Skeleton } from "./States";
 import { SourceBadge } from "./Card";
 
-type SortKey = keyof Pick<Invoice, "name" | "posting_date" | "customer_name" | "outlet" | "status" | "total_qty" | "base_net_total" | "base_grand_total" | "outstanding_amount">;
+type SortKey = keyof Pick<Invoice, "name" | "business_date" | "posting_date" | "customer_name" | "outlet" | "status" | "total_qty" | "base_net_total" | "base_grand_total" | "outstanding_amount">;
 
 interface Column {
   key: SortKey;
@@ -18,7 +18,8 @@ interface Column {
 
 const COLUMNS: Column[] = [
   { key: "name", label: "Invoice", render: (r) => r.name },
-  { key: "posting_date", label: "Date", render: (r) => `${fmtDate(r.posting_date)}${r.posting_time ? " " + r.posting_time.slice(0, 5) : ""}` },
+  { key: "business_date", label: "Date", render: (r) => fmtDate(r.business_date) },
+  { key: "posting_date", label: "Keyed on", render: (r) => `${fmtDate(r.posting_date)}${r.posting_time ? " " + r.posting_time.slice(0, 5) : ""}` },
   { key: "customer_name", label: "Customer", render: (r) => r.customer_name || r.customer },
   { key: "outlet", label: "Outlet", render: (r) => r.outlet },
   { key: "status", label: "Status", render: (r) => (r.is_return ? "Return" : r.status) },
@@ -30,6 +31,7 @@ const COLUMNS: Column[] = [
 
 const CSV_COLUMNS: CsvColumn<Invoice>[] = [
   { key: "name", header: "Invoice", value: (r) => r.name },
+  { key: "business_date", header: "Date (closing period end)", value: (r) => r.business_date },
   { key: "posting_date", header: "Posting Date", value: (r) => r.posting_date },
   { key: "posting_time", header: "Posting Time", value: (r) => r.posting_time },
   { key: "customer", header: "Customer ID", value: (r) => r.customer },
@@ -70,7 +72,7 @@ interface Props {
 const PAGE = 25;
 
 export default function InvoicesTable({ state, range, onRetry }: Props) {
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "posting_date", dir: "desc" });
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "business_date", dir: "desc" });
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
 
@@ -86,7 +88,9 @@ export default function InvoicesTable({ state, range, onRetry }: Props) {
       const bv = b[sort.key];
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
       const cmp = String(av ?? "").localeCompare(String(bv ?? ""));
-      if (cmp === 0 && sort.key === "posting_date") return (a.posting_time || "").localeCompare(b.posting_time || "") * dir;
+      if (cmp === 0 && (sort.key === "business_date" || sort.key === "posting_date")) {
+        return `${a.posting_date} ${a.posting_time || ""}`.localeCompare(`${b.posting_date} ${b.posting_time || ""}`) * dir;
+      }
       return cmp * dir;
     });
   }, [state.data, sort, query]);
@@ -101,7 +105,7 @@ export default function InvoicesTable({ state, range, onRetry }: Props) {
 
   const toggleSort = (key: SortKey) => {
     setPage(0);
-    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "posting_date" ? "desc" : "asc" }));
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "business_date" || key === "posting_date" ? "desc" : "asc" }));
   };
 
   const exportCsv = () => downloadCsv(`sales-invoices_${range.start}_to_${range.end}.csv`, toCsv(rows, CSV_COLUMNS));
@@ -112,7 +116,7 @@ export default function InvoicesTable({ state, range, onRetry }: Props) {
         <div>
           <h3 className="text-sm font-semibold text-ink">Sales Invoices</h3>
           <p className="mt-0.5 text-xs text-ink-3">
-            {state.data ? `${rows.length} of ${state.data.count} invoices · ${pkr(totals.grand)} total` : "Submitted invoices in the selected range"}
+            {state.data ? `${rows.length} of ${state.data.count} invoices · ${pkr(totals.grand)} total · dated by POS closing period end` : "Submitted invoices in the selected range"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -153,7 +157,7 @@ export default function InvoicesTable({ state, range, onRetry }: Props) {
       ) : (
         <>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-xs">
+            <table className="w-full min-w-[960px] text-xs">
               <thead>
                 <tr className="border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-3">
                   {COLUMNS.map((c) => {
@@ -182,7 +186,7 @@ export default function InvoicesTable({ state, range, onRetry }: Props) {
               </tbody>
               <tfoot>
                 <tr className="text-ink font-medium">
-                  <td className="py-2 pr-3" colSpan={7}>
+                  <td className="py-2 pr-3" colSpan={8}>
                     Total ({rows.length} invoices)
                   </td>
                   <td className="py-2 pr-3 text-right tnum">{pkr(totals.grand)}</td>

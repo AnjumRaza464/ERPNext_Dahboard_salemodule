@@ -1164,8 +1164,9 @@ async def _sold_frame(rng: DateRange, refresh: bool = False) -> pd.DataFrame:
     async def _load() -> list[dict[str, Any]]:
         c = get_client()
         out: list[dict[str, Any]] = []
-        for parent_dt, child_dt, extra in sales.ITEM_SOURCES:
-            names = [r["name"] for r in await c.get_all(parent_dt, ["name"], sales.live._filters(rng, extra + [["is_return", "=", 0]]))]
+        by_doctype = await sales._sale_names(rng, refresh)  # dated by business day (closing period end)
+        for parent_dt, child_dt, _ in sales.ITEM_SOURCES:
+            names = list(by_doctype[parent_dt])
             if not names:
                 continue
             results = await asyncio.gather(*[
