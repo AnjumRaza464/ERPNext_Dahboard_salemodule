@@ -156,6 +156,12 @@ export default function Dashboard() {
     if (p === "month" || p === "lastmonth") setCompareCommand({ mode: "previous", nonce: Date.now() });
   };
 
+  /** Set the range from inside a tab; the date filter lights up the matching preset. */
+  const selectRange = (r: Range) => {
+    setPreset(presetFor(r));
+    setRange(r);
+  };
+
   const onRangeChange = (p: Preset, r: Range) => {
     setPreset(p);
     setRange(p === "custom" ? r : presetRange(p));
@@ -286,7 +292,7 @@ export default function Dashboard() {
       </div>
 
       {tab === "sales" ? (
-        <SalesTab {...tabProps} onSelectToday={() => onRangeChange("today", presetRange("today"))} />
+        <SalesTab {...tabProps} onSetRange={selectRange} />
       ) : tab === "costing" ? (
         <CostingTab range={range} refreshKey={refreshKey} onRetry={refresh} />
       ) : tab === "forecast" ? (

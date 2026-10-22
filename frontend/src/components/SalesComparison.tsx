@@ -61,6 +61,8 @@ interface Props {
   onCustomChange: (range: Range) => void;
   /** switch the dashboard to today, compared with yesterday */
   onTodayVsYesterday?: () => void;
+  /** change the dashboard's own range (custom mode lets both periods be picked here) */
+  onRangeChange?: (range: Range) => void;
 }
 
 /**
@@ -69,8 +71,14 @@ interface Props {
  * traffic-vs-spend attribution, daily or cumulative curves, and where the difference came
  * from (top and low items, item groups).
  */
-export default function SalesComparison({ range, refreshKey, onRetry, mode, onModeChange, custom, onCustomChange, onTodayVsYesterday }: Props) {
+export default function SalesComparison({ range, refreshKey, onRetry, mode, onModeChange, custom, onCustomChange, onTodayVsYesterday, onRangeChange }: Props) {
   const [draft, setDraft] = useState<Range>(custom);
+  const [curDraft, setCurDraft] = useState<Range>(range);
+  const [seenRange, setSeenRange] = useState(range);
+  if (range !== seenRange) {
+    setSeenRange(range);
+    setCurDraft(range);
+  }
   const [view, setView] = useState<View>("daily");
   const [seenCustom, setSeenCustom] = useState(custom);
   if (custom !== seenCustom) {
@@ -87,13 +95,15 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
   const modeDef = MODES.find((m) => m.id === mode)!;
   const cmpName = todayVsYesterday ? "Yesterday" : modeDef.short;
   const cmpRange = cmp.data ? fmtRange(cmp.data.previous_range.start, cmp.data.previous_range.end) : undefined;
-  const invalid = draft.start > draft.end || !ISO_DATE.test(draft.start) || !ISO_DATE.test(draft.end);
+  const badRange = (r: Range) => r.start > r.end || !ISO_DATE.test(r.start) || !ISO_DATE.test(r.end);
+  const invalid = badRange(draft) || badRange(curDraft);
+  const overlaps = mode === "custom" && custom.start <= range.end && custom.end >= range.start;
   const noLastYear = lastYearUnavailable(range);
 
   const rows = cmp.data
     ? cmp.data.points.map((p) => ({
         ...p,
-        label: p.period ? fmtPeriod(p.period, cmp.data!.granularity) : `#${p.index}`,
+        label: p.period ? fmtPeriod(p.period, cmp.data!.granularity) : `${cmp.data!.granularity === "day" ? "Day" : "Month"} ${p.index}`,
       }))
     : [];
   const series =
@@ -153,9 +163,20 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
             className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5"
             onSubmit={(e) => {
               e.preventDefault();
-              if (!invalid) onCustomChange(draft);
+              if (invalid) return;
+              if (onRangeChange && (curDraft.start !== range.start || curDraft.end !== range.end)) onRangeChange(curDraft);
+              onCustomChange(draft);
             }}
           >
+            {onRangeChange && (
+              <>
+                <span className="text-xs text-ink-2">This period</span>
+                <input type="date" value={curDraft.start} min={DATA_FROM} max={today} onChange={(e) => setCurDraft(setRangeEdge(curDraft, "start", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="This period start date" />
+                <span className="text-xs text-ink-3">to</span>
+                <input type="date" value={curDraft.end} min={DATA_FROM} max={today} onChange={(e) => setCurDraft(setRangeEdge(curDraft, "end", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="This period end date" />
+                <span className="text-xs font-medium text-ink-3">vs</span>
+              </>
+            )}
             <span className="text-xs text-ink-2">Compare with</span>
             <input type="date" value={draft.start} min={DATA_FROM} max={today} onChange={(e) => setDraft(setRangeEdge(draft, "start", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison start date" />
             <span className="text-xs text-ink-3">to</span>
@@ -165,6 +186,7 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
             </button>
             {invalid && <span className="text-xs text-bad">Pick two valid dates, start before end</span>}
             {cmp.data && cmp.data.granularity === "month" && <span className="text-xs text-ink-3">Long ranges are compared month by month</span>}
+            {overlaps && !invalid && <span className="text-xs text-warn">The two periods overlap, so the change is understated</span>}
           </form>
         )}
       </div>
