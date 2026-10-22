@@ -188,7 +188,8 @@ def _deltas(cur: dict[str, Any], prev: dict[str, Any]) -> dict[str, float | None
 def comparison_range(rng: DateRange, mode: str = "previous", cmp_start: date | None = None, cmp_end: date | None = None) -> DateRange:
     """Which period the current range is compared against.
 
-    previous   -> the same-length window immediately before (default)
+    previous   -> the same-length window immediately before (default); a range starting on the 1st
+                  is matched by calendar month instead (see _previous_months)
     last_week  -> the same dates one week earlier (weekday-aligned)
     last_year  -> the same dates one year earlier
     custom     -> any explicit cmp_start / cmp_end
@@ -199,7 +200,20 @@ def comparison_range(rng: DateRange, mode: str = "previous", cmp_start: date | N
         return DateRange(_shift_year(rng.start), _shift_year(rng.end))
     if mode == "custom" and cmp_start and cmp_end:
         return DateRange(cmp_start, cmp_end)
-    return rng.previous()
+    return _previous_months(rng) or rng.previous()
+
+
+def _previous_months(rng: DateRange) -> DateRange | None:
+    """Ranges starting on the 1st are compared with the same dates of the month(s) before:
+    1-22 Oct -> 1-22 Sep, a whole month -> the whole month before, Jul-Sep -> Apr-Jun.
+    The end day is clamped to the shorter month (1-30 Mar -> 1-28 Feb)."""
+    if rng.start.day != 1:
+        return None
+    months = (rng.end.year - rng.start.year) * 12 + rng.end.month - rng.start.month + 1
+    end_month = _add_months(rng.end, -months)
+    end_last = calendar.monthrange(end_month.year, end_month.month)[1]
+    full_month = rng.end.day == calendar.monthrange(rng.end.year, rng.end.month)[1]
+    return DateRange(_add_months(rng.start, -months), end_month.replace(day=end_last if full_month else min(rng.end.day, end_last)))
 
 
 def _shift_year(d: date, years: int = -1) -> date:

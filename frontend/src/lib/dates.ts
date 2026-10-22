@@ -21,6 +21,14 @@ export function toIso(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Change one end of a date range; when the two ends would cross, the other end moves along
+ *  (so any date can be picked in either box, in any order). */
+export function setRangeEdge(r: Range, edge: "start" | "end", value: string): Range {
+  if (!value) return r;
+  if (edge === "start") return { start: value, end: r.end && r.end < value ? value : r.end };
+  return { start: r.start && r.start > value ? value : r.start, end: value };
+}
+
 export function presetRange(preset: Preset, now = new Date()): Range {
   const end = toIso(now);
   if (preset === "today") return { start: end, end };
