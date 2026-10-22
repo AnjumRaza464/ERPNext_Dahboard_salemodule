@@ -151,9 +151,15 @@ export default function Dashboard() {
     restartAuto();
   }, [refresh, restartAuto]);
 
+  // This Month / Last Month compare with the same dates of the month before ("previous" is month-aligned for them).
+  const compareMonthBefore = (p: Preset) => {
+    if (p === "month" || p === "lastmonth") setCompareCommand({ mode: "previous", nonce: Date.now() });
+  };
+
   const onRangeChange = (p: Preset, r: Range) => {
     setPreset(p);
     setRange(p === "custom" ? r : presetRange(p));
+    compareMonthBefore(p);
   };
 
   const setTheme = (next: boolean) => {
@@ -179,8 +185,10 @@ export default function Dashboard() {
     // Voice commands address the sales panels, so bring that tab forward first.
     if (a.range || a.live_range || a.compare || a.section) setTab("sales");
     if (a.range) {
-      setPreset(presetFor(a.range));
+      const p = presetFor(a.range);
+      setPreset(p);
       setRange(a.range);
+      if (!a.compare) compareMonthBefore(p);
     }
     if (a.live_range) setLiveCommand({ range: a.live_range, nonce: Date.now() });
     if (a.compare) setCompareCommand({ ...a.compare, nonce: Date.now() });
@@ -278,7 +286,7 @@ export default function Dashboard() {
       </div>
 
       {tab === "sales" ? (
-        <SalesTab {...tabProps} />
+        <SalesTab {...tabProps} onSelectToday={() => onRangeChange("today", presetRange("today"))} />
       ) : tab === "costing" ? (
         <CostingTab range={range} refreshKey={refreshKey} onRetry={refresh} />
       ) : tab === "forecast" ? (

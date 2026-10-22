@@ -1,6 +1,7 @@
 "use client";
 
 import { useApi } from "@/hooks/useApi";
+import { setRangeEdge, toIso } from "@/lib/dates";
 import { fmtDate, fmtPeriod, fmtRange, num, pct, pkr } from "@/lib/format";
 import type { CompareBreakdown, CompareMode, CompareTotals, Range, SalesCompare } from "@/lib/types";
 import Card from "./Card";
@@ -12,7 +13,7 @@ import { useState } from "react";
 export const DATA_FROM = "2026-04-16";
 
 export const MODES: { id: CompareMode; label: string; short: string; hint: string }[] = [
-  { id: "previous", label: "Previous period", short: "Previous period", hint: "the same number of days immediately before the selected range" },
+  { id: "previous", label: "Previous period", short: "Previous period", hint: "the same number of days immediately before the selected range; a range starting on the 1st compares with the same dates of the month before" },
   { id: "last_week", label: "Same days last week", short: "Last week", hint: "the same dates one week earlier (weekday-aligned)" },
   { id: "last_year", label: "Same period last year", short: "Last year", hint: "the same dates one year earlier" },
   { id: "custom", label: "Custom period", short: "Comparison period", hint: "any two dates you choose" },
@@ -58,6 +59,8 @@ interface Props {
   onModeChange: (mode: CompareMode) => void;
   custom: Range;
   onCustomChange: (range: Range) => void;
+  /** switch the dashboard to today, compared with yesterday */
+  onTodayVsYesterday?: () => void;
 }
 
 /**
@@ -66,7 +69,7 @@ interface Props {
  * traffic-vs-spend attribution, daily or cumulative curves, and where the difference came
  * from (top and low items, item groups).
  */
-export default function SalesComparison({ range, refreshKey, onRetry, mode, onModeChange, custom, onCustomChange }: Props) {
+export default function SalesComparison({ range, refreshKey, onRetry, mode, onModeChange, custom, onCustomChange, onTodayVsYesterday }: Props) {
   const [draft, setDraft] = useState<Range>(custom);
   const [view, setView] = useState<View>("daily");
   const [seenCustom, setSeenCustom] = useState(custom);
@@ -79,8 +82,10 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
   const cmp = useApi<SalesCompare>("/api/sales/compare", range, refreshKey, extra);
   const br = useApi<CompareBreakdown>("/api/sales/compare-breakdown", range, refreshKey, { ...extra, limit: 8 });
 
+  const today = toIso(new Date());
+  const todayVsYesterday = mode === "previous" && range.start === today && range.end === today;
   const modeDef = MODES.find((m) => m.id === mode)!;
-  const cmpName = modeDef.short;
+  const cmpName = todayVsYesterday ? "Yesterday" : modeDef.short;
   const cmpRange = cmp.data ? fmtRange(cmp.data.previous_range.start, cmp.data.previous_range.end) : undefined;
   const invalid = draft.start > draft.end || !ISO_DATE.test(draft.start) || !ISO_DATE.test(draft.end);
   const noLastYear = lastYearUnavailable(range);
@@ -107,19 +112,26 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
     `${pkr(v)} · ${num(Number(e.dataKey === "current" ? e.payload?.current_qty : e.payload?.previous_qty))} qty`;
   const itemLabel = (l: string | number, e?: { payload?: Record<string, unknown> }) => `${l} · ${pct(Number(e?.payload?.delta_pct ?? NaN))}`;
 
+  const tabClass = (active: boolean) =>
+    `rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-40 ${active ? "bg-accent text-white shadow-sm" : "text-ink-2 hover:bg-surface-2"}`;
   const modeControl = (
     <div role="tablist" aria-label="Compare against" className="flex flex-wrap rounded-lg border border-line bg-surface p-0.5">
+      {onTodayVsYesterday && (
+        <button role="tab" aria-selected={todayVsYesterday} title="Show today and compare it with yesterday" onClick={onTodayVsYesterday} className={tabClass(todayVsYesterday)}>
+          Today vs yesterday
+        </button>
+      )}
       {MODES.map((m) => {
         const disabled = m.id === "last_year" && noLastYear;
         return (
           <button
             key={m.id}
             role="tab"
-            aria-selected={mode === m.id}
+            aria-selected={mode === m.id && !todayVsYesterday}
             disabled={disabled}
             title={disabled ? `Data starts ${fmtDate(DATA_FROM)}, so last year is not available yet` : m.hint}
             onClick={() => onModeChange(m.id)}
-            className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-40 ${mode === m.id ? "bg-accent text-white shadow-sm" : "text-ink-2 hover:bg-surface-2"}`}
+            className={tabClass(mode === m.id && !todayVsYesterday)}
           >
             {m.label}
           </button>
@@ -145,9 +157,9 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
             }}
           >
             <span className="text-xs text-ink-2">Compare with</span>
-            <input type="date" value={draft.start} max={draft.end} onChange={(e) => setDraft({ ...draft, start: e.target.value })} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison start date" />
+            <input type="date" value={draft.start} min={DATA_FROM} max={today} onChange={(e) => setDraft(setRangeEdge(draft, "start", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison start date" />
             <span className="text-xs text-ink-3">to</span>
-            <input type="date" value={draft.end} min={draft.start} onChange={(e) => setDraft({ ...draft, end: e.target.value })} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison end date" />
+            <input type="date" value={draft.end} min={DATA_FROM} max={today} onChange={(e) => setDraft(setRangeEdge(draft, "end", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison end date" />
             <button type="submit" disabled={invalid} className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
               Apply
             </button>

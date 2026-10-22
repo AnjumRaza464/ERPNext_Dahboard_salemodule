@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { PRESETS, type Preset } from "@/lib/dates";
+import { PRESETS, setRangeEdge, toIso, type Preset } from "@/lib/dates";
 import type { Range } from "@/lib/types";
 
 interface Props {
@@ -13,6 +13,7 @@ interface Props {
 export default function DateFilter({ preset, range, onChange }: Props) {
   const [draft, setDraft] = useState<Range>(range);
   const invalid = draft.start > draft.end;
+  const today = toIso(new Date());
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -44,8 +45,8 @@ export default function DateFilter({ preset, range, onChange }: Props) {
           <input
             type="date"
             value={draft.start}
-            max={draft.end}
-            onChange={(e) => setDraft({ ...draft, start: e.target.value })}
+            max={today}
+            onChange={(e) => setDraft(setRangeEdge(draft, "start", e.target.value))}
             className="rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink"
             aria-label="Start date"
           />
@@ -53,8 +54,8 @@ export default function DateFilter({ preset, range, onChange }: Props) {
           <input
             type="date"
             value={draft.end}
-            min={draft.start}
-            onChange={(e) => setDraft({ ...draft, end: e.target.value })}
+            max={today}
+            onChange={(e) => setDraft(setRangeEdge(draft, "end", e.target.value))}
             className="rounded-md border border-line bg-surface px-2 py-1.5 text-xs text-ink"
             aria-label="End date"
           />
