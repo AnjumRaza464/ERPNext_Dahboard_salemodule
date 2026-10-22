@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -474,6 +475,72 @@ async def voice_text(cmd: TextCommand):
                          cmd.live_start, cmd.live_end)
 
 
+_URDU_0_99 = (
+    "sifar ek do teen chaar paanch chhe saat aath nau das gyaarah baarah terah chaudah pandrah solah satrah athaarah "
+    "unnees bees ikkees baaees teyees chaubees pachchees chhabbees sattaees athaaees untees tees ikattees battees "
+    "taintees chauntees paintees chhattees saintees artees untaalees chaalees iktaalees bayaalees taintaalees chavaalees "
+    "paintaalees chhiyaalees saintaalees artaalees unchaas pachaas ikyaavan baavan tirpan chauvan pachpan chhappan "
+    "sattaavan atthaavan unsath saath iksath baasath tirsath chaunsath painsath chhiyaasath sarsath athsath unhattar "
+    "sattar ikhattar bahattar tihattar chauhattar pachhattar chhihattar sathattar athattar unaasi assi ikyaasi bayaasi "
+    "tiraasi chauraasi pachaasi chhiyaasi sattaasi atthaasi nawaasi nawwe ikyaanwe baanwe tiraanwe chauraanwe pachaanwe "
+    "chhiyaanwe sattaanwe atthaanwe ninyaanwe"
+).split()
+
+
+def _urdu_number(n: int) -> str:
+    """312 -> 'teen sau baarah', 125000 -> 'ek lakh pachchees hazaar' (Pakistani lakh/crore grouping)."""
+    if n < 100:
+        return _URDU_0_99[n]
+    parts = []
+    for size, name in ((10**7, "crore"), (10**5, "lakh"), (1000, "hazaar"), (100, "sau")):
+        if n >= size:
+            parts.append(f"{_urdu_number(n // size)} {name}")
+            n %= size
+    if n:
+        parts.append(_URDU_0_99[n])
+    return " ".join(parts)
+
+
+def _spoken_rupees(m: re.Match[str]) -> str:
+    v = float(m.group(2).replace(",", "")) * {"crore": 1e7, "lakh": 1e5}.get(m.group(3) or "", 1)
+    # round big amounts so the listener hears the size, not every digit (exact figure stays on screen)
+    step = 10**5 if v >= 1e7 else 1000 if v >= 1e5 else 100 if v >= 1e4 else 1
+    n = int(round(v / step)) * step
+    return f"{'minus ' if m.group(1) else ''}{_urdu_number(n)} rupay"
+
+
+def _spoken_percent(m: re.Match[str]) -> str:
+    v = float(m.group(1))
+    if 0 < v < 0.25:
+        return "bohat thora"
+    if 0.25 <= v < 0.75:
+        return "aadha percent"
+    return f"{_urdu_number(int(round(v)))} percent"
+
+
+_NUM = r"\d+(?:,\d+)*(?:\.\d+)?"  # 125,430 / 12.3 -- a comma after the number stays as punctuation
+
+
+def _spoken(text: str) -> str:
+    """Display text -> text the TTS reads clearly: amounts, percents and counts as Urdu words."""
+    t = text.replace("\n", " ").replace("~", "taqreeban ").replace("/din", " rozana")
+    t = re.sub(r"\bavg\b", "average", t, flags=re.I)
+    t = re.sub(rf"(-)?\b(?:Rs|PKR)\.?\s*({_NUM})(?:\s*(crore|lakh)\b)?", _spoken_rupees, t)
+    t = re.sub(r"(\d+(?:\.\d+)?)\s*(?:%|percent\b)", _spoken_percent, t)
+    t = re.sub(_NUM, lambda m: _urdu_number(int(round(float(m.group().replace(",", ""))))), t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+TTS_INSTRUCTIONS = (
+    "Voice: a clear, friendly Pakistani Urdu speaker reading a short sales update to a shop owner. "
+    "Pace: calm and unhurried, a little slower than normal conversation, so every figure is easy to catch. "
+    "Pronunciation: the text is Urdu written in Roman letters; pronounce every word as Urdu, never with English "
+    "phonetics. Numbers are already written as Urdu words (e.g. 'ek lakh pachchees hazaar rupay'); say them "
+    "distinctly with slight emphasis. English words like sale, bill, average, percent, target and plan are said "
+    "the way Pakistanis say them. Pauses: a short pause at every comma and a clear pause at every full stop."
+)
+
+
 class SpeakRequest(BaseModel):
     text: str = Field(min_length=1, max_length=600)
 
@@ -487,8 +554,8 @@ async def voice_speak(req: SpeakRequest):
             resp = await client.post("/audio/speech", json={
                 "model": s.openai_tts_model,
                 "voice": s.openai_tts_voice,
-                "input": req.text,
-                "instructions": "Speak naturally and warmly in a Pakistani Urdu accent. The text is Roman Urdu; read numbers in Urdu.",
+                "input": _spoken(req.text),
+                "instructions": TTS_INSTRUCTIONS,
                 "response_format": "mp3",
             })
         except httpx.HTTPError as exc:
