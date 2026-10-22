@@ -51,7 +51,7 @@ export function SalesKpiRow({ kpis, cmpLabel }: { kpis: ReturnType<typeof useApi
   if (c?.returns_total) extras.push(`returns ${pkr(Math.abs(c.returns_total))}`);
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <KpiCard label="Net Sales" value={pkr(c?.net_sales)} delta={d?.net_sales} sub={prev ? `vs ${cmpLabel} ${prev}${extras.length ? " · " + extras.join(" · ") : ""}` : undefined} {...common} />
+      <KpiCard label="Net Sales" value={pkr(c?.net_sales)} delta={d?.net_sales} sub={prev ? `vs ${[cmpLabel, prev].filter(Boolean).join(" ")}${extras.length ? " · " + extras.join(" · ") : ""}` : undefined} {...common} />
       <KpiCard label="Bills" value={num(c?.checks)} delta={d?.checks} sub={c ? `${num(c.checks_per_trading_day, 1)} per trading din · ${num(c.active_days)} din` : undefined} {...common} />
       <KpiCard label="Avg Bill" value={pkr(c?.avg_check)} delta={d?.avg_check} sub={c ? (c.excluded_days.length ? `excl. ${c.excluded_days.length} bulk-entry din` : "net sales ÷ bills") : undefined} {...common} />
       <KpiCard label="Qty Sold" value={num(c?.total_qty)} delta={d?.total_qty} sub={c && c.checks ? `${num(c.items_per_check, 1)} per bill` : undefined} {...common} />
@@ -382,11 +382,11 @@ const CMP_LABEL: Record<CompareMode, string> = { previous: "previous", last_week
 const monthAligned = (r: Range) => r.start.endsWith("-01") && r.start.slice(0, 7) === r.end.slice(0, 7);
 
 export default function SalesTab({
-  range, refreshKey, onRetry, compareCommand, liveCommand, onShowInvoices, onSelectToday,
+  range, refreshKey, onRetry, compareCommand, liveCommand, onShowInvoices, onSetRange,
 }: {
   range: Range; refreshKey: number; onRetry: () => void; compareCommand?: CompareCommand; liveCommand?: LiveCommand; onShowInvoices?: () => void;
-  /** switch the dashboard range to today */
-  onSelectToday?: () => void;
+  /** change the dashboard range (Today vs yesterday, custom comparison periods) */
+  onSetRange?: (range: Range) => void;
 }) {
   // Comparison basis shared by the KPI tiles, the comparison block and the product mix.
   const [cmpMode, setCmpMode] = useState<CompareMode>(() => {
@@ -406,9 +406,22 @@ export default function SalesTab({
   }
   const effectiveMode: CompareMode = cmpMode === "last_year" && lastYearUnavailable(range) ? "previous" : cmpMode;
   const todayIso = toIso(new Date());
+  const isToday = range.start === todayIso && range.end === todayIso;
+  // "Today vs yesterday" moves the page to today; picking another basis afterwards brings back the period from before
+  const [beforeToday, setBeforeToday] = useState<Range | null>(null);
+  const todayVsYesterday = () => {
+    if (!isToday) setBeforeToday(range);
+    setCmpMode("previous");
+    onSetRange?.({ start: todayIso, end: todayIso });
+  };
+  const changeMode = (m: CompareMode) => {
+    if (isToday && beforeToday && onSetRange) onSetRange(beforeToday);
+    setBeforeToday(null);
+    setCmpMode(m);
+  };
   const cmpLabel =
     effectiveMode !== "previous" ? CMP_LABEL[effectiveMode]
-    : range.start === todayIso && range.end === todayIso ? "yesterday"
+    : isToday ? "yesterday"
     : monthAligned(range) ? "last month" : CMP_LABEL.previous;
   useEffect(() => {
     try {
@@ -453,11 +466,9 @@ export default function SalesTab({
       <LiveCompare refreshKey={refreshKey} onRetry={onRetry} command={liveCommand} />
       <WeeklyRhythm refreshKey={refreshKey} />
       <SectionHeading id={sectionId("comparison")} title="Comparison" hint="how this range stacks up against another period" />
-      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} mode={cmpMode} onModeChange={setCmpMode} custom={cmpCustom} onCustomChange={setCmpCustom}
-        onTodayVsYesterday={onSelectToday && (() => {
-          setCmpMode("previous");
-          onSelectToday();
-        })}
+      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} mode={cmpMode} onModeChange={changeMode} custom={cmpCustom} onCustomChange={setCmpCustom}
+        onTodayVsYesterday={onSetRange && todayVsYesterday}
+        onRangeChange={onSetRange}
       />
       <SectionHeading title="Trends, Mix & Patterns" hint="what sells, how much, and how it moves month to month" />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
