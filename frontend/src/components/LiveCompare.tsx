@@ -19,7 +19,7 @@ type Flash = "up" | "down";
 
 const DEFAULT_INTERVAL = parseIntervalEnv(process.env.NEXT_PUBLIC_LIVE_REFRESH_SECONDS, 60);
 const INTERVAL_OPTIONS = withDefault(LIVE_INTERVALS, DEFAULT_INTERVAL);
-const COMPARE_KEYS: LiveCompareKey[] = ["previous", "last_week", "weekday_avg"];
+const COMPARE_KEYS: LiveCompareKey[] = ["previous", "weekday_avg"];
 
 interface MetricDef {
   key: LiveMetric;
@@ -138,8 +138,8 @@ interface Props {
 }
 
 /**
- * Trading-style live board: the selected day (default today) against the same date last month, against the
- * same weekday last week and against the average of that weekday over the previous calendar
+ * Trading-style live board: the selected day (default today) against the same date last month and
+ * against the average of that weekday over the previous calendar
  * month, for net sales, bills (GCS) and average bill. Figures come from POS Invoice, so
  * today's bills appear as soon as they are keyed in. Polls ERPNext on a configurable
  * interval; Refresh fetches immediately.
@@ -245,14 +245,12 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
       dates: pt.dates,
       current: pick("current", pt),
       previous: pick("previous", pt),
-      last_week: pick("last_week", pt),
       weekday_avg: pick("weekday_avg", pt),
     }));
   }, [data, chartMetric]);
   const chartSeries = [
     { key: "current", name: currentLabel, color: "var(--series-1)" },
     { key: "previous", name: labels.previous, color: "var(--ink-3)", dashed: true },
-    { key: "last_week", name: labels.last_week, color: "var(--series-2)", dashed: true },
     ...(hasBaseline ? [{ key: "weekday_avg", name: labels.weekday_avg, color: "var(--series-3)", dashed: true }] : []),
   ];
   const chartFmt = chartMetric === "sales" ? (v: number) => pkr(v) : (v: number) => `${num(v, v % 1 ? 1 : 0)} bills`;
@@ -261,7 +259,6 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
   const periodCols: { key: LivePeriodKey; label: string }[] = [
     { key: "current", label: currentLabel },
     { key: "previous", label: labels.previous },
-    { key: "last_week", label: labels.last_week },
     ...(hasBaseline ? [{ key: "weekday_avg" as LivePeriodKey, label: labels.weekday_avg }] : []),
   ];
 
@@ -274,7 +271,7 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
             Today vs Last Month Same Date vs Last Month Same Day 4 Week Avg
           </h2>
           <p className="mt-0.5 text-xs text-ink-3">
-            {currentLabel} vs {labels.previous.toLowerCase()}, {labels.last_week.toLowerCase()}{hasBaseline ? ` and the ${labels.weekday_avg}` : ""} · net sales, bills and average bill from POS bills
+            {currentLabel} vs {labels.previous.toLowerCase()}{hasBaseline ? ` and the ${labels.weekday_avg}` : ""} · net sales, bills and average bill from POS bills
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -432,7 +429,7 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
                   format={chartFmt}
                   labelFormat={(l, e) => {
                     const d = (e?.payload as { dates?: Partial<Record<LivePeriodKey, string>> } | undefined)?.dates;
-                    return data.granularity === "hour" ? `${l} (entry time)` : `${l} · ${fmtDate(d?.current)} vs ${fmtDate(d?.previous)} / ${fmtDate(d?.last_week)}`;
+                    return data.granularity === "hour" ? `${l} (entry time)` : `${l} · ${fmtDate(d?.current)} vs ${fmtDate(d?.previous)}`;
                   }}
                 />
               ) : (
@@ -466,7 +463,7 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
                     ))}
                   </tr>
                 ))}
-                {(data.periods.current.totals.return_count > 0 || data.periods.previous.totals.return_count > 0 || data.periods.last_week.totals.return_count > 0) && (
+                {(data.periods.current.totals.return_count > 0 || data.periods.previous.totals.return_count > 0) && (
                   <tr className="border-b border-line/60">
                     <td className="py-1.5 text-ink-2">Returns</td>
                     {periodCols.map((c) => (
@@ -480,7 +477,7 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
               <tfoot>
                 <tr>
                   <td colSpan={periodCols.length + 1} className="pt-2 text-[11px] text-ink-3">
-                    {currentLabel}: {fmtRange(data.periods.current.range!.start, data.periods.current.range!.end)} · {labels.previous}: {fmtRange(data.periods.previous.range!.start, data.periods.previous.range!.end)} · {labels.last_week}: {fmtRange(data.periods.last_week.range!.start, data.periods.last_week.range!.end)}
+                    {currentLabel}: {fmtRange(data.periods.current.range!.start, data.periods.current.range!.end)} · {labels.previous}: {fmtRange(data.periods.previous.range!.start, data.periods.previous.range!.end)}
                     {hasBaseline && wa?.dates?.length ? ` · ${labels.weekday_avg}: ${wa.dates.map((d) => fmtDate(d).slice(0, 6)).join(", ")}` : ""}
                   </td>
                 </tr>
