@@ -14,7 +14,7 @@ import InvoicesTable from "../InvoicesTable";
 import KpiCard from "../KpiCard";
 import LiveCompare from "../LiveCompare";
 import PmixTable from "../PmixTable";
-import SalesComparison, { lastYearUnavailable } from "../SalesComparison";
+import SalesComparison from "../SalesComparison";
 import SalesSummary from "../SalesSummary";
 import TargetTile from "../TargetTile";
 import WeeklyRhythm from "../WeeklyRhythm";
@@ -34,10 +34,16 @@ function readStored<T>(key: string, fallback: T): T {
   }
 }
 
-/** Calendar month before the range start: a sensible first custom comparison. */
+/** The same date one month earlier, clamped to the shorter month (31 Mar -> 28 Feb). */
+function monthBack(iso: string): string {
+  const d = new Date(iso + "T00:00:00");
+  const last = new Date(d.getFullYear(), d.getMonth(), 0).getDate();
+  return toIso(new Date(d.getFullYear(), d.getMonth() - 1, Math.min(d.getDate(), last)));
+}
+
+/** The same dates last month (1-24 Oct -> 1-24 Sep): a like-for-like first custom comparison. */
 function defaultCustom(range: Range): Range {
-  const d = new Date(range.start + "T00:00:00");
-  return { start: toIso(new Date(d.getFullYear(), d.getMonth() - 1, 1)), end: toIso(new Date(d.getFullYear(), d.getMonth(), 0)) };
+  return { start: monthBack(range.start), end: monthBack(range.end) };
 }
 
 /** Headline tiles on bills (POS Invoice): net sales, bills, average bill, quantity. */
@@ -376,11 +382,6 @@ export function SectionHeading({ title, hint, id }: { title: string; hint: strin
   );
 }
 
-const CMP_LABEL: Record<CompareMode, string> = { previous: "previous", last_week: "last week", last_year: "last year", custom: "" };
-
-/** Range starting on the 1st and ending in the same month: "previous" then means the same dates of the month before. */
-const monthAligned = (r: Range) => r.start.endsWith("-01") && r.start.slice(0, 7) === r.end.slice(0, 7);
-
 export default function SalesTab({
   range, refreshKey, onRetry, compareCommand, liveCommand, onShowInvoices, onSetRange,
 }: {
@@ -388,12 +389,8 @@ export default function SalesTab({
   /** change the dashboard range (Today vs yesterday, custom comparison periods) */
   onSetRange?: (range: Range) => void;
 }) {
-  // Comparison basis shared by the KPI tiles, the comparison block and the product mix.
-  const [cmpMode, setCmpMode] = useState<CompareMode>(() => {
-    const stored = readStored<CompareMode>("sb-cmp-mode", "previous");
-    // a range from the 1st (This Month / Last Month) compares with the month before, not a week back
-    return stored === "last_week" && monthAligned(range) ? "previous" : stored;
-  });
+  // Comparison basis shared by the KPI tiles, the comparison block and the product mix: always a period the owner picks.
+  const cmpMode: CompareMode = "custom";
   const [cmpCustom, setCmpCustom] = useState<Range>(() => {
     const stored = readStored<Range | null>("sb-cmp-range", null);
     return stored && ISO_DATE.test(stored.start) && ISO_DATE.test(stored.end) && stored.start <= stored.end ? stored : defaultCustom(range);
@@ -401,36 +398,16 @@ export default function SalesTab({
   const [seenCommand, setSeenCommand] = useState(compareCommand?.nonce);
   if (compareCommand && compareCommand.nonce !== seenCommand) {
     setSeenCommand(compareCommand.nonce);
-    setCmpMode(compareCommand.mode);
     if (compareCommand.range) setCmpCustom(compareCommand.range);
   }
-  const effectiveMode: CompareMode = cmpMode === "last_year" && lastYearUnavailable(range) ? "previous" : cmpMode;
-  const todayIso = toIso(new Date());
-  const isToday = range.start === todayIso && range.end === todayIso;
-  // "Today vs yesterday" moves the page to today; picking another basis afterwards brings back the period from before
-  const [beforeToday, setBeforeToday] = useState<Range | null>(null);
-  const todayVsYesterday = () => {
-    if (!isToday) setBeforeToday(range);
-    setCmpMode("previous");
-    onSetRange?.({ start: todayIso, end: todayIso });
-  };
-  const changeMode = (m: CompareMode) => {
-    if (isToday && beforeToday && onSetRange) onSetRange(beforeToday);
-    setBeforeToday(null);
-    setCmpMode(m);
-  };
-  const cmpLabel =
-    effectiveMode !== "previous" ? CMP_LABEL[effectiveMode]
-    : isToday ? "yesterday"
-    : monthAligned(range) ? "last month" : CMP_LABEL.previous;
+  const cmpLabel = "";
   useEffect(() => {
     try {
-      localStorage.setItem("sb-cmp-mode", JSON.stringify(cmpMode));
       localStorage.setItem("sb-cmp-range", JSON.stringify(cmpCustom));
     } catch {
       /* ignore */
     }
-  }, [cmpMode, cmpCustom]);
+  }, [cmpCustom]);
 
   // Monthly target typed by the owner, remembered per month in this browser.
   const monthKey = range.end.slice(0, 7);
@@ -448,7 +425,7 @@ export default function SalesTab({
     }
   };
 
-  const cmpExtra: Record<string, string | number> = effectiveMode === "custom" ? { mode: effectiveMode, cmp_start: cmpCustom.start, cmp_end: cmpCustom.end } : { mode: effectiveMode };
+  const cmpExtra: Record<string, string | number> = { mode: cmpMode, cmp_start: cmpCustom.start, cmp_end: cmpCustom.end };
   const kpis = useApi<SalesKpis>("/api/sales/kpis", range, refreshKey, cmpExtra);
   const pace = useApi<RunRate>("/api/sales/run-rate", range, refreshKey, target ? { target } : {});
   const invoices = useApi<InvoicesResponse>("/api/sales/invoices", range, refreshKey);
@@ -466,13 +443,10 @@ export default function SalesTab({
       <LiveCompare refreshKey={refreshKey} onRetry={onRetry} command={liveCommand} />
       <WeeklyRhythm refreshKey={refreshKey} />
       <SectionHeading id={sectionId("comparison")} title="Comparison" hint="how this range stacks up against another period" />
-      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} mode={cmpMode} onModeChange={changeMode} custom={cmpCustom} onCustomChange={setCmpCustom}
-        onTodayVsYesterday={onSetRange && todayVsYesterday}
-        onRangeChange={onSetRange}
-      />
+      <SalesComparison range={range} refreshKey={refreshKey} onRetry={onRetry} custom={cmpCustom} onCustomChange={setCmpCustom} onRangeChange={onSetRange} />
       <SectionHeading title="Trends, Mix & Patterns" hint="what sells, how much, and how it moves month to month" />
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <SalesCharts range={range} refreshKey={refreshKey} onRetry={onRetry} cmpMode={effectiveMode} cmpCustom={cmpCustom} />
+        <SalesCharts range={range} refreshKey={refreshKey} onRetry={onRetry} cmpMode={cmpMode} cmpCustom={cmpCustom} />
       </div>
       <div id={sectionId("invoices")} className="scroll-mt-4">
         <InvoicesTable state={invoices} range={range} onRetry={onRetry} />
