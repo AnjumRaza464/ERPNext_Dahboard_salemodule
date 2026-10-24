@@ -119,9 +119,10 @@ to the next reload, **Refresh Now** (immediate reload, restarts the countdown) a
    active-day pace. Type the target on the tile (✎, remembered per month in the browser) or set `MONTHLY_TARGETS`.
 3. **Subah ka brief**: three to five Roman Urdu lines (last trading day vs the same weekday, month pace vs target, this
    week, tomorrow's typical quantities, data notes) with a **Copy** button for WhatsApp. Collapsible.
-4. **Today vs Yesterday vs Last Week Same Day Analysis** board (own date control): the selected day vs yesterday, vs the
-   same day last week and vs the **4-week same-weekday average** (shown once that weekday traded in at least one of the
-   four weeks, deltas from two), for Net Sales, Bills (GCS) and Average Bill, trading-style with ▲/▼ arrows, % and
+4. **Today vs Last Month Same Date vs Last Month Same Day 4 Week Avg** board (own date control): the selected day vs the
+   same date last month (24 Oct -> 24 Sep, clamped to the shorter month), vs the same day last week and vs the
+   **average of that weekday over last month** (every Saturday of September for a Saturday in October; shown once that
+   weekday traded at least once, deltas from two), for Net Sales, Bills (GCS) and Average Bill, trading-style with ▲/▼ arrows, % and
    absolute change, tick flash on change, first / last bill time, running totals by entry hour and a side-by-side table.
    Own auto-refresh (Off / 15 s … 5 min, `NEXT_PUBLIC_LIVE_REFRESH_SECONDS`). When today has no bills yet, one click
    shows the last trading day instead.

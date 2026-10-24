@@ -29,7 +29,7 @@ function readStored<T>(key: string, fallback: T): T {
 
 /**
  * The week's rhythm: each day of the selected week against the same day last week and against
- * the average of that weekday over the previous four weeks (only weeks in which it traded).
+ * the average of that weekday over the previous calendar month (only weeks in which it traded).
  * Bakery sales follow a weekly beat, so "vs the same weekday" is the fairer comparison.
  */
 export default function WeeklyRhythm({ refreshKey }: { refreshKey: number }) {
@@ -74,7 +74,11 @@ export default function WeeklyRhythm({ refreshKey }: { refreshKey: number }) {
   };
 
   const w = data;
-  const rows = w ? w.days.map((d) => ({ label: d.weekday, current: d.net_sales, previous: d.last_week?.net_sales ?? 0, avg4: d.avg4?.net_sales ?? null, n: d.avg4?.trading_weeks ?? 0, date: d.date })) : [];
+  const rows = w ? w.days.map((d) => ({ label: d.weekday, current: d.net_sales, previous: d.last_week?.net_sales ?? 0, avg4: d.avg4?.net_sales ?? null, n: d.avg4?.trading_weeks ?? 0, mon: d.avg4?.month.slice(0, 3) ?? "", date: d.date })) : [];
+
+  // a week that straddles two months takes some days' baseline from each month
+  const months = w ? [...new Set(w.days.map((d) => d.avg4?.month.slice(0, 3)).filter(Boolean))] : [];
+  const avgLabel = months.length === 1 ? `${months[0]} avg` : "last month avg";
 
   return (
     <section id={sectionId("weekly")} className="card scroll-mt-4 p-4 sm:p-5">
@@ -86,11 +90,11 @@ export default function WeeklyRhythm({ refreshKey }: { refreshKey: number }) {
               ? w.wtd.checks
                 ? `${w.week.is_current ? "Is hafte ab tak" : "Is hafte"} ${pkr(w.wtd.net_sales)} · ${num(w.wtd.checks)} bills · avg bill ${pkr(w.wtd.avg_check)} · pichle hafte ke wahi din se `
                 : `No bills in ${w.week.label} yet`
-              : "Each day vs the same day last week and vs its 4-week average"}
+              : "Each day vs the same day last week and vs the same weekday's average last month"}
             {w && w.wtd.checks ? <DeltaText value={w.wtd.vs_last_week_pct} /> : null}
             {w && w.wtd.checks && w.wtd.vs_avg4_pct !== null ? (
               <>
-                {" · vs 4-wk avg "}
+                {` · vs ${avgLabel} `}
                 <DeltaText value={w.wtd.vs_avg4_pct} />
               </>
             ) : null}
@@ -125,7 +129,7 @@ export default function WeeklyRhythm({ refreshKey }: { refreshKey: number }) {
                 <th className="py-1.5 font-medium">Day</th>
                 <th className="py-1.5 text-right font-medium">This week</th>
                 <th className="py-1.5 text-right font-medium">vs last week</th>
-                <th className="hidden py-1.5 text-right font-medium sm:table-cell">vs 4-wk avg</th>
+                <th className="hidden py-1.5 text-right font-medium sm:table-cell">vs {avgLabel}</th>
               </tr>
             </thead>
             <tbody className="tnum">
@@ -142,13 +146,13 @@ export default function WeeklyRhythm({ refreshKey }: { refreshKey: number }) {
                         <div className="mt-1 text-[11px] font-normal text-ink-3">
                           {d.checks ? `${num(d.checks)} bills · avg bill ${pkr(d.avg_check)} · ${d.share_of_week_pct}% of week` : d.is_future ? "not yet" : "no bills"}
                           {d.last_week ? ` · last week ${pkr(d.last_week.net_sales)} (${num(d.last_week.checks)} bills)` : " · last week: no bills"}
-                          {d.avg4 ? ` · 4-wk avg ${pkr(d.avg4.net_sales)} over ${d.avg4.trading_weeks} of 4 weeks` : " · no 4-week history"}
+                          {d.avg4 ? ` · ${d.avg4.month.slice(0, 3)} ${d.weekday} avg ${pkr(d.avg4.net_sales)} over ${d.avg4.trading_weeks} of ${d.avg4.weeks} weeks (${d.avg4.dates.map((x) => fmtDate(x).slice(0, 6)).join(", ")})` : " · no bills on this weekday last month"}
                         </div>
                       )}
                     </td>
                     <td className={`py-1.5 text-right ${muted ? "" : "font-medium text-ink"}`}>{d.is_future ? "·" : pkr(d.net_sales)}</td>
                     <td className="py-1.5 text-right">{d.is_future ? "" : <DeltaText value={d.delta_vs_last_week_pct} />}</td>
-                    <td className="hidden py-1.5 text-right sm:table-cell" title={d.avg4 ? `${d.avg4.trading_weeks} of 4 weeks traded` : undefined}>
+                    <td className="hidden py-1.5 text-right sm:table-cell" title={d.avg4 ? `${d.avg4.month}: ${d.avg4.trading_weeks} of ${d.avg4.weeks} weeks traded` : undefined}>
                       {d.is_future ? "" : d.avg4 && d.avg4.trading_weeks >= 2 ? <DeltaText value={d.delta_vs_avg4_pct} /> : <span className="text-ink-3">{d.avg4 ? `n=${d.avg4.trading_weeks}` : "—"}</span>}
                     </td>
                   </tr>
@@ -170,9 +174,9 @@ export default function WeeklyRhythm({ refreshKey }: { refreshKey: number }) {
               names={["This week", "Last week"]}
               height={250}
               format={(v, e) => {
-                const p = e.payload as { avg4?: number | null; n?: number } | undefined;
+                const p = e.payload as { avg4?: number | null; n?: number; mon?: string } | undefined;
                 const base = pkr(v);
-                return e.dataKey === "current" && p?.avg4 != null ? `${base} · 4-wk avg ${pkr(p.avg4)} (n=${p.n})` : base;
+                return e.dataKey === "current" && p?.avg4 != null ? `${base} · ${p.mon} avg ${pkr(p.avg4)} (n=${p.n})` : base;
               }}
               labelFormat={(l, e) => {
                 const p = e?.payload as { date?: string } | undefined;

@@ -1,5 +1,6 @@
-"""Live comparison board: a day (or range) against the day before, the same day last week
-and the average of the same weekday over the previous four weeks.
+"""Live comparison board: a day (or range) against the same date last month, the same day last week
+and the average of the same weekday over the previous calendar month (e.g. every Saturday of
+September for a Saturday in October).
 
 Figures come from **POS Invoice** rows, one per customer bill, so the bill count
 (GCS) and the average bill are real till transactions. Sales Invoices produced by a
@@ -21,6 +22,7 @@ Sales tab is dated this way.
 from __future__ import annotations
 
 import asyncio
+import calendar
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -32,7 +34,6 @@ from ..erpnext_client import get_client
 
 METRICS = ("sales", "gcs", "avg_check", "qty")
 PERIODS = ("current", "previous", "last_week", "weekday_avg")
-BASELINE_WEEKS = 4
 
 # The two sources that together hold every bill exactly once.
 SOURCES: tuple[tuple[str, list[list[Any]]], ...] = (
@@ -292,6 +293,30 @@ async def _last_trading_day(before: date) -> str | None:
     return max(days) if days else None
 
 
+def month_back(d: date) -> date:
+    """The same date one calendar month earlier, clamped to the shorter month (31 Mar -> 28 Feb)."""
+    first = (d.replace(day=1) - timedelta(days=1)).replace(day=1)
+    return first.replace(day=min(d.day, calendar.monthrange(first.year, first.month)[1]))
+
+
+def last_month_range(rng: DateRange) -> DateRange:
+    """The same dates one calendar month earlier (24 Oct -> 24 Sep, 1-22 Oct -> 1-22 Sep)."""
+    return DateRange(month_back(rng.start), month_back(rng.end))
+
+
+def last_month_weekdays(day: date) -> list[date]:
+    """Every date in the calendar month before `day` that falls on the same weekday as `day`
+    (four or five of them): the baseline for the weekday average."""
+    last = day.replace(day=1) - timedelta(days=1)
+    first = last.replace(day=1)
+    d = first + timedelta(days=(day.weekday() - first.weekday()) % 7)
+    out = []
+    while d <= last:
+        out.append(d)
+        d += timedelta(days=7)
+    return out
+
+
 def default_live_day(last_trading_day: str | None, today: date | None = None) -> date:
     """What the board shows when nobody picked a date: today, or the last trading day
     before 11:00 local (the shop has not opened / nothing keyed in yet)."""
@@ -305,14 +330,14 @@ def default_live_day(last_trading_day: str | None, today: date | None = None) ->
 
 
 async def live_compare(rng: DateRange) -> dict[str, Any]:
-    """Current range vs the same-length window before it, vs the same window one week earlier,
-    and (single day only) vs the average of the same weekday over the previous four weeks."""
+    """Current range vs the same dates last month, vs the same window one week earlier,
+    and (single day only) vs the average of the same weekday over the previous calendar month."""
     hourly = rng.days == 1
     today = today_local()
-    ranges: dict[str, DateRange | None] = {"current": rng, "previous": rng.previous(), "last_week": rng.shift(-7), "weekday_avg": None}
+    ranges: dict[str, DateRange | None] = {"current": rng, "previous": last_month_range(rng), "last_week": rng.shift(-7), "weekday_avg": None}
     excluded = get_settings().live_excluded_dates
-    baseline_dates = [rng.start - timedelta(days=7 * k) for k in range(1, BASELINE_WEEKS + 1)] if hourly else []
-    baseline_dates = [d for d in baseline_dates if d.isoformat() not in excluded]
+    month_days = last_month_weekdays(rng.start) if hourly else []
+    baseline_dates = [d for d in month_days if d.isoformat() not in excluded]
 
     def _period(name: str):
         r = ranges[name]
@@ -328,7 +353,7 @@ async def live_compare(rng: DateRange) -> dict[str, Any]:
     rows: dict[str, list[dict[str, Any]]] = {"current": cur_rows, "previous": prev_rows, "last_week": lw_rows}
     totals: dict[str, dict[str, Any]] = {p: _totals(rows[p]) for p in rows}
 
-    # ---- 4-week same-weekday baseline: mean over the weeks in which that weekday traded
+    # ---- last month's same-weekday baseline: mean over the weeks in which that weekday traded
     base_by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in base_rows:
         base_by_date[r["date"]].append(r)
@@ -407,6 +432,7 @@ async def live_compare(rng: DateRange) -> dict[str, Any]:
                 "key": "weekday_avg", "range": None, "totals": totals["weekday_avg"],
                 "weekday": rng.start.strftime("%A") if hourly else None,
                 "trading_weeks": trading_weeks, "dates": sorted(trading),
+                "month": month_days[0].strftime("%B %Y") if month_days else None,
             },
         },
         "deltas": deltas,

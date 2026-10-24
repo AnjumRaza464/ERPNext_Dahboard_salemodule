@@ -33,9 +33,10 @@ MAX_AUDIO_BYTES = 4_000_000  # Vercel caps request bodies at 4.5 MB; ~30 s of we
 
 # Must match the section ids the frontend scrolls to (see frontend/src/lib/voice.ts).
 SECTIONS: dict[str, str] = {
-    "live": ("'Today vs Yesterday vs Last Week Same Day Analysis' board: today vs yesterday AND vs the same day last week for net sales, "
+    "live": ("'Today vs Last Month Same Date vs Last Month Same Day 4 Week Avg' board: today vs the same date last month, vs the same "
+             "day last week AND vs the average of that weekday over last month, for net sales, "
              "GCS (guest checks / number of bills / kitne bill) and average check (average bill / per bill sale). "
-             "Use for 'aaj vs kal', 'today vs yesterday', 'pichle hafte isi din se', 'live', 'GCS', 'average check'"),
+             "Use for 'aaj ki sale', 'pichle mahine isi tareekh se', 'pichle hafte isi din se', 'live', 'GCS', 'average check'"),
     "kpis": "headline KPI tiles: total sales, invoice count, avg invoice, qty, outstanding (top of page)",
     "pace": "daily pace and monthly target: avg per day, best day, lowest day, projected month-end, target attainment (target ka kitna hua)",
     "weekly": "weekly rhythm table: this week day by day vs last week vs 4-week same-weekday average (is hafte, hafte ka pattern, pichle hafte se)",
@@ -285,14 +286,14 @@ def _change(pct: float | None) -> str:
 
 
 async def _live_summary(rng: DateRange, today: date) -> str:
-    """Spoken version of the live board: sales, GCS and average check vs yesterday and vs last week."""
+    """Spoken version of the live board: sales, GCS and average check vs the same date last month and vs last week."""
     d, _ = await cached(f"sales:live:{rng.key()}", lambda: live.live_compare(rng), live=True)
     p = d["periods"]
     cur, prev, lw = p["current"]["totals"], p["previous"]["totals"], p["last_week"]["totals"]
     single = d["days"] == 1
     is_today = single and rng.start == today
     name = "Aaj" if is_today else (f"{rng.start.day} {rng.start.strftime('%B')}" if single else "Is period")
-    prev_name = "kal" if is_today else ("pichle din" if single else "pichle period")
+    prev_name = "pichle mahine isi tareekh" if single else "pichle mahine inhi tareekhon"
     lw_name = "pichle hafte isi din" if single else "pichle hafte isi period"
     if not cur["gcs"]:
         prev_part = f"ki sale {_rs(prev['sales'])} thi" if prev["gcs"] else "bhi koi sale nahi thi"

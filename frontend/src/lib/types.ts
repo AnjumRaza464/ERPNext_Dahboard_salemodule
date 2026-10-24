@@ -320,7 +320,13 @@ export interface WeekAvg4 {
   net_sales: number;
   checks: number;
   avg_check: number;
+  /** weeks of last month in which this weekday traded */
   trading_weeks: number;
+  /** how many times this weekday fell in last month (4 or 5) */
+  weeks: number;
+  /** month the average is taken over, e.g. "September 2026" */
+  month: string;
+  dates: string[];
 }
 
 export interface WeekDay {
@@ -494,6 +500,8 @@ export interface LivePeriod {
   weekday?: string | null;
   trading_weeks?: number;
   dates?: string[];
+  /** month the weekday average is taken over, e.g. "September 2026" */
+  month?: string | null;
 }
 
 export interface LiveDelta {
