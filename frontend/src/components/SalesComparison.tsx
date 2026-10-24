@@ -3,7 +3,7 @@
 import { useApi } from "@/hooks/useApi";
 import { setRangeEdge, toIso } from "@/lib/dates";
 import { fmtDate, fmtPeriod, fmtRange, num, pct, pkr } from "@/lib/format";
-import type { CompareBreakdown, CompareMode, CompareTotals, Range, SalesCompare } from "@/lib/types";
+import type { CompareBreakdown, CompareTotals, Range, SalesCompare } from "@/lib/types";
 import Card from "./Card";
 import DeltaText from "./DeltaText";
 import GroupedColumns from "./charts/GroupedColumns";
@@ -12,12 +12,7 @@ import { useState } from "react";
 
 export const DATA_FROM = "2026-04-16";
 
-export const MODES: { id: CompareMode; label: string; short: string; hint: string }[] = [
-  { id: "previous", label: "Previous period", short: "Previous period", hint: "the same number of days immediately before the selected range; a range starting on the 1st compares with the same dates of the month before" },
-  { id: "last_week", label: "Same days last week", short: "Last week", hint: "the same dates one week earlier (weekday-aligned)" },
-  { id: "last_year", label: "Same period last year", short: "Last year", hint: "the same dates one year earlier" },
-  { id: "custom", label: "Custom period", short: "Comparison period", hint: "any two dates you choose" },
-];
+const CMP_NAME = "Comparison period";
 
 type View = "daily" | "cumulative";
 
@@ -42,12 +37,6 @@ const KPI_ROWS: KpiRowDef[] = [
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** True when "same period last year" would fall before the first bill in ERPNext. */
-export function lastYearUnavailable(range: Range): boolean {
-  const y = Number(range.start.slice(0, 4)) - 1;
-  return `${y}${range.start.slice(4)}` < DATA_FROM;
-}
-
 const th = "py-1.5 font-medium";
 const thead = "border-b border-line text-left text-[11px] uppercase tracking-wide text-ink-3";
 
@@ -55,23 +44,18 @@ interface Props {
   range: Range;
   refreshKey: number;
   onRetry: () => void;
-  mode: CompareMode;
-  onModeChange: (mode: CompareMode) => void;
   custom: Range;
   onCustomChange: (range: Range) => void;
-  /** switch the dashboard to today, compared with yesterday */
-  onTodayVsYesterday?: () => void;
   /** change the dashboard's own range (custom mode lets both periods be picked here) */
   onRangeChange?: (range: Range) => void;
 }
 
 /**
- * Sales comparison block: the selected range against another period (previous period, the
- * same days last week, last year, or any custom period), on bills: KPIs side by side with a
+ * Sales comparison block: the selected range against a custom period the owner picks, on bills: KPIs side by side with a
  * traffic-vs-spend attribution, daily or cumulative curves, and where the difference came
- * from (top and low items, item groups).
+ * from (top and low items).
  */
-export default function SalesComparison({ range, refreshKey, onRetry, mode, onModeChange, custom, onCustomChange, onTodayVsYesterday, onRangeChange }: Props) {
+export default function SalesComparison({ range, refreshKey, onRetry, custom, onCustomChange, onRangeChange }: Props) {
   const [draft, setDraft] = useState<Range>(custom);
   const [curDraft, setCurDraft] = useState<Range>(range);
   const [seenRange, setSeenRange] = useState(range);
@@ -86,19 +70,16 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
     setDraft(custom);
   }
 
-  const extra: Record<string, string | number> = mode === "custom" ? { mode, cmp_start: custom.start, cmp_end: custom.end } : { mode };
+  const extra: Record<string, string | number> = { mode: "custom", cmp_start: custom.start, cmp_end: custom.end };
   const cmp = useApi<SalesCompare>("/api/sales/compare", range, refreshKey, extra);
   const br = useApi<CompareBreakdown>("/api/sales/compare-breakdown", range, refreshKey, { ...extra, limit: 8 });
 
   const today = toIso(new Date());
-  const todayVsYesterday = mode === "previous" && range.start === today && range.end === today;
-  const modeDef = MODES.find((m) => m.id === mode)!;
-  const cmpName = todayVsYesterday ? "Yesterday" : modeDef.short;
+  const cmpName = CMP_NAME;
   const cmpRange = cmp.data ? fmtRange(cmp.data.previous_range.start, cmp.data.previous_range.end) : undefined;
   const badRange = (r: Range) => r.start > r.end || !ISO_DATE.test(r.start) || !ISO_DATE.test(r.end);
   const invalid = badRange(draft) || badRange(curDraft);
-  const overlaps = mode === "custom" && custom.start <= range.end && custom.end >= range.start;
-  const noLastYear = lastYearUnavailable(range);
+  const overlaps = custom.start <= range.end && custom.end >= range.start;
 
   const rows = cmp.data
     ? cmp.data.points.map((p) => ({
@@ -122,73 +103,40 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
     `${pkr(v)} · ${num(Number(e.dataKey === "current" ? e.payload?.current_qty : e.payload?.previous_qty))} qty`;
   const itemLabel = (l: string | number, e?: { payload?: Record<string, unknown> }) => `${l} · ${pct(Number(e?.payload?.delta_pct ?? NaN))}`;
 
-  const tabClass = (active: boolean) =>
-    `rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-40 ${active ? "bg-accent text-white shadow-sm" : "text-ink-2 hover:bg-surface-2"}`;
-  const modeControl = (
-    <div role="tablist" aria-label="Compare against" className="flex flex-wrap rounded-lg border border-line bg-surface p-0.5">
-      {onTodayVsYesterday && (
-        <button role="tab" aria-selected={todayVsYesterday} title="Show today and compare it with yesterday" onClick={onTodayVsYesterday} className={tabClass(todayVsYesterday)}>
-          Today vs yesterday
-        </button>
-      )}
-      {MODES.map((m) => {
-        const disabled = m.id === "last_year" && noLastYear;
-        return (
-          <button
-            key={m.id}
-            role="tab"
-            aria-selected={mode === m.id && !todayVsYesterday}
-            disabled={disabled}
-            title={disabled ? `Data starts ${fmtDate(DATA_FROM)}, so last year is not available yet` : m.hint}
-            onClick={() => onModeChange(m.id)}
-            className={tabClass(mode === m.id && !todayVsYesterday)}
-          >
-            {m.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-      <div className="flex flex-wrap items-center justify-between gap-3 lg:col-span-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs text-ink-2">Compare against</span>
-          {modeControl}
-          <span className="text-[11px] text-ink-3">applies to the KPI tiles, this block and the product mix</span>
-        </div>
-        {mode === "custom" && (
-          <form
-            className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (invalid) return;
-              if (onRangeChange && (curDraft.start !== range.start || curDraft.end !== range.end)) onRangeChange(curDraft);
-              onCustomChange(draft);
-            }}
-          >
-            {onRangeChange && (
-              <>
-                <span className="text-xs text-ink-2">This period</span>
-                <input type="date" value={curDraft.start} min={DATA_FROM} max={today} onChange={(e) => setCurDraft(setRangeEdge(curDraft, "start", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="This period start date" />
-                <span className="text-xs text-ink-3">to</span>
-                <input type="date" value={curDraft.end} min={DATA_FROM} max={today} onChange={(e) => setCurDraft(setRangeEdge(curDraft, "end", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="This period end date" />
-                <span className="text-xs font-medium text-ink-3">vs</span>
-              </>
-            )}
-            <span className="text-xs text-ink-2">Compare with</span>
-            <input type="date" value={draft.start} min={DATA_FROM} max={today} onChange={(e) => setDraft(setRangeEdge(draft, "start", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison start date" />
-            <span className="text-xs text-ink-3">to</span>
-            <input type="date" value={draft.end} min={DATA_FROM} max={today} onChange={(e) => setDraft(setRangeEdge(draft, "end", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison end date" />
-            <button type="submit" disabled={invalid} className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
-              Apply
-            </button>
-            {invalid && <span className="text-xs text-bad">Pick two valid dates, start before end</span>}
-            {cmp.data && cmp.data.granularity === "month" && <span className="text-xs text-ink-3">Long ranges are compared month by month</span>}
-            {overlaps && !invalid && <span className="text-xs text-warn">The two periods overlap, so the change is understated</span>}
-          </form>
-        )}
+      <div className="flex flex-wrap items-center gap-3 lg:col-span-2">
+        <span className="text-xs text-ink-2">Custom period</span>
+        <form
+          className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface px-3 py-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (invalid) return;
+            if (onRangeChange && (curDraft.start !== range.start || curDraft.end !== range.end)) onRangeChange(curDraft);
+            onCustomChange(draft);
+          }}
+        >
+          {onRangeChange && (
+            <>
+              <span className="text-xs text-ink-2">This period</span>
+              <input type="date" value={curDraft.start} min={DATA_FROM} max={today} onChange={(e) => setCurDraft(setRangeEdge(curDraft, "start", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="This period start date" />
+              <span className="text-xs text-ink-3">to</span>
+              <input type="date" value={curDraft.end} min={DATA_FROM} max={today} onChange={(e) => setCurDraft(setRangeEdge(curDraft, "end", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="This period end date" />
+              <span className="text-xs font-medium text-ink-3">vs</span>
+            </>
+          )}
+          <span className="text-xs text-ink-2">Compare with</span>
+          <input type="date" value={draft.start} min={DATA_FROM} max={today} onChange={(e) => setDraft(setRangeEdge(draft, "start", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison start date" />
+          <span className="text-xs text-ink-3">to</span>
+          <input type="date" value={draft.end} min={DATA_FROM} max={today} onChange={(e) => setDraft(setRangeEdge(draft, "end", e.target.value))} className="rounded-md border border-line bg-surface px-2 py-1 text-xs text-ink" aria-label="Comparison end date" />
+          <button type="submit" disabled={invalid} className="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-40">
+            Apply
+          </button>
+          {invalid && <span className="text-xs text-bad">Pick two valid dates, start before end</span>}
+          {cmp.data && cmp.data.granularity === "month" && <span className="text-xs text-ink-3">Long ranges are compared month by month</span>}
+          {overlaps && !invalid && <span className="text-xs text-warn">The two periods overlap, so the change is understated</span>}
+        </form>
+        <span className="text-[11px] text-ink-3">applies to the KPI tiles, this block and the product mix</span>
       </div>
 
       <Card
@@ -196,7 +144,7 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
         subtitle={
           cmp.data
             ? `${fmtRange(range.start, range.end)} vs ${cmpRange} · ${pkr(cmp.data.current_total)} vs ${pkr(cmp.data.previous_total)} · ${cmp.data.delta_pct !== null ? pct(cmp.data.delta_pct) : "no comparison sales"} (${pkr(cmp.data.delta_abs, { sign: true })})`
-            : `Compare the selected range against ${modeDef.hint}`
+            : "Compare the selected range against any two dates you choose"
         }
         source={cmp.data?.source}
         loading={cmp.loading}
@@ -305,21 +253,6 @@ export default function SalesComparison({ range, refreshKey, onRetry, mode, onMo
         onRetry={onRetry}
       >
         {br.data && <GroupedColumns rows={br.data.bottom_items.map((r) => ({ ...r }))} names={["This period", cmpName]} layout="vertical" format={itemFormat} labelFormat={itemLabel} />}
-      </Card>
-
-      <Card
-        title="Item Groups: This vs Comparison"
-        subtitle={br.data ? `Sales value per item group · ${cmpName.toLowerCase()} ${cmpRange ?? ""}` : undefined}
-        source={br.data?.source}
-        loading={br.loading}
-        refreshing={br.refreshing}
-        error={br.error}
-        empty={!!br.data && br.data.item_groups.length === 0}
-        onRetry={onRetry}
-        className="lg:col-span-2"
-        height={200}
-      >
-        {br.data && <GroupedColumns rows={br.data.item_groups.slice(0, 8).map((r) => ({ ...r }))} names={["This period", cmpName]} layout="vertical" format={itemFormat} labelFormat={itemLabel} height={Math.max(160, br.data.item_groups.slice(0, 8).length * 40 + 40)} />}
       </Card>
     </div>
   );
