@@ -77,13 +77,14 @@ function validRange(r: unknown): r is Range {
 }
 
 /** Wording for the comparison periods, given what the board is showing. */
-function periodLabels(range: Range, days: number, weekday?: string | null, weeks?: number): Record<LiveCompareKey, string> {
+function periodLabels(range: Range, days: number, weekday?: string | null, weeks?: number, month?: string | null): Record<LiveCompareKey, string> {
   const wd = weekday ? weekday.slice(0, 3) : "weekday";
+  const mon = month ? month.slice(0, 3) : "Last month";
   if (days === 1) {
     return {
       previous: range.start === toIso(new Date()) ? "Yesterday" : "Previous day",
       last_week: "Same day last week",
-      weekday_avg: `4-wk ${wd} avg${weeks ? ` (n=${weeks})` : ""}`,
+      weekday_avg: `${mon} ${wd} avg${weeks ? ` (n=${weeks})` : ""}`,
     };
   }
   return { previous: `Previous ${days} days`, last_week: "Same period last week", weekday_avg: "4-wk avg" };
@@ -138,8 +139,8 @@ interface Props {
 
 /**
  * Trading-style live board: the selected day (default today) against yesterday, against the
- * same weekday last week and against the average of that weekday over the previous four
- * weeks, for net sales, bills (GCS) and average bill. Figures come from POS Invoice, so
+ * same weekday last week and against the average of that weekday over the previous calendar
+ * month, for net sales, bills (GCS) and average bill. Figures come from POS Invoice, so
  * today's bills appear as soon as they are keyed in. Polls ERPNext on a configurable
  * interval; Refresh fetches immediately.
  */
@@ -230,7 +231,7 @@ export default function LiveCompare({ refreshKey, onRetry, command }: Props) {
   };
 
   const wa = data?.periods.weekday_avg;
-  const labels = periodLabels(range, data?.days ?? (range.start === range.end ? 1 : 2), wa?.weekday, wa?.trading_weeks);
+  const labels = periodLabels(range, data?.days ?? (range.start === range.end ? 1 : 2), wa?.weekday, wa?.trading_weeks, wa?.month);
   const currentLabel = currentLabelFor(range);
   const invalidDraft = !validRange(draft);
   const noSalesYet = !!data && data.periods.current.totals.gcs === 0 && data.periods.current.totals.return_count === 0;

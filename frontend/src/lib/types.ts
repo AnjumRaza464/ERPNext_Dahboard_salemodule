@@ -494,6 +494,8 @@ export interface LivePeriod {
   weekday?: string | null;
   trading_weeks?: number;
   dates?: string[];
+  /** month the weekday average is taken over, e.g. "September 2026" */
+  month?: string | null;
 }
 
 export interface LiveDelta {
