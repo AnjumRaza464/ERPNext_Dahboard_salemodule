@@ -29,7 +29,7 @@ from ..config import get_settings
 from ..dates import DateRange, today_local
 from ..erpnext_client import get_client
 from . import live
-from .live import fmt_time
+from .live import fmt_time, last_month_weekdays
 
 INVOICE_FIELDS = [
     "name", "posting_date", "posting_time", "customer", "customer_name",
@@ -734,10 +734,12 @@ async def by_weekday(rng: DateRange, refresh: bool = False) -> dict[str, Any]:
 
 
 async def weekly(week_start: date, refresh: bool = False) -> dict[str, Any]:
-    """This week day by day vs last week vs the average of the same weekday over the previous 4 weeks."""
+    """This week day by day vs last week vs the average of the same weekday over the previous calendar
+    month (a Saturday in October against every Saturday of September)."""
     week_start = week_start - timedelta(days=week_start.weekday())  # Monday
     week_end = week_start + timedelta(days=6)
-    window = DateRange(week_start - timedelta(days=28), week_end)
+    # reaches back to the 1st of the month before the week's first day, which covers every day's baseline
+    window = DateRange(min(week_start - timedelta(days=7), (week_start.replace(day=1) - timedelta(days=1)).replace(day=1)), week_end)
     daily = _daily(await _check_days(window, refresh), window)
     by_date = {d.strftime("%Y-%m-%d"): row for d, row in zip(daily["date"], daily.to_dict("records"))}
     today = today_local()
@@ -756,14 +758,17 @@ async def weekly(week_start: date, refresh: bool = False) -> dict[str, Any]:
         d = week_start + timedelta(days=i)
         cur = _fig(by_date.get(d.isoformat()))
         lw = _fig(by_date.get((d - timedelta(days=7)).isoformat()))
-        prev4 = [by_date.get((d - timedelta(days=7 * k)).isoformat()) for k in range(1, 5)]
-        traded = [r for r in prev4 if r is not None and r["checks"] > 0 and not r["excluded"]]
+        month_days = last_month_weekdays(d)
+        baseline = [by_date.get(x.isoformat()) for x in month_days]
+        traded = [r for r in baseline if r is not None and r["checks"] > 0 and not r["excluded"]]
         avg4 = None
         if traded:
             s = sum(float(r["net"]) for r in traded)
             c = sum(int(r["checks"]) for r in traded)
             avg4 = {"net_sales": round(s / len(traded), 2), "checks": round(c / len(traded), 1),
-                    "avg_check": round(s / c, 2) if c else 0.0, "trading_weeks": len(traded)}
+                    "avg_check": round(s / c, 2) if c else 0.0, "trading_weeks": len(traded),
+                    "weeks": len(month_days), "month": month_days[0].strftime("%B %Y"),
+                    "dates": [r["date"].strftime("%Y-%m-%d") for r in traded]}
         net = cur["net_sales"] if cur else 0.0
         week_total += net
         days.append({
