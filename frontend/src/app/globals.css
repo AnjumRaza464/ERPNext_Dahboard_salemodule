@@ -230,21 +230,34 @@ body {
   to { opacity: 1; transform: none; }
 }
 .login-rise { animation: login-rise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-@keyframes login-draw {
-  from { stroke-dashoffset: 1; }
-  to { stroke-dashoffset: 0; }
+/* 3D board fades into the page at its edges */
+.login-scene-mask {
+  mask-image: radial-gradient(ellipse 72% 78% at 50% 50%, #000 52%, transparent 100%);
 }
-.login-draw { stroke-dasharray: 1; animation: login-draw 1.4s cubic-bezier(0.4, 0, 0.2, 1) both; }
-@keyframes login-bar {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
+/* sign-in card follows the pointer in 3D */
+.login-tilt-wrap { perspective: 1200px; }
+.login-tilt {
+  transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transform-style: preserve-3d;
+  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
 }
-.login-bar { transform-box: fill-box; transform-origin: bottom; animation: login-bar 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
-@keyframes login-grow {
+.login-glare {
+  background: radial-gradient(420px circle at var(--gx, 50%) var(--gy, 0%), rgba(255, 255, 255, 0.07), transparent 55%);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.login-tilt-wrap:hover .login-glare { opacity: 1; }
+@keyframes login-progress {
   from { transform: scaleX(0); }
   to { transform: scaleX(1); }
 }
-.login-grow { transform-origin: left; animation: login-grow 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.login-progress { animation: login-progress linear both; }
+@keyframes login-swap {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.login-swap { animation: login-swap 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 @keyframes login-sheen {
   from { transform: translateX(-120%); }
   to { transform: translateX(120%); }
@@ -254,6 +267,6 @@ body {
   animation: login-sheen 3.2s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .login-float, .login-rise, .login-draw, .login-bar, .login-grow, .login-sheen { animation: none; }
-  .login-draw { stroke-dasharray: none; }
+  .login-float, .login-rise, .login-sheen, .login-progress, .login-swap { animation: none; }
+  .login-tilt { transform: none; transition: none; }
 }
