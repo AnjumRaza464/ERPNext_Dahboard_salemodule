@@ -15,6 +15,7 @@ import ForecastTab from "./tabs/ForecastTab";
 import SalesTab from "./tabs/SalesTab";
 import StockTrackingTab from "./tabs/StockTrackingTab";
 import VoiceAssistant from "./VoiceAssistant";
+import { logout } from "@/app/login/actions";
 
 interface Health {
   status: string;
@@ -259,6 +260,13 @@ export default function Dashboard() {
               </svg>
             )}
           </button>
+          <form action={logout}>
+            <button type="submit" className="rounded-md border border-line bg-surface p-1.5 text-ink-2 hover:bg-surface-2" title="Sign out" aria-label="Sign out">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 17l5-5-5-5M15 12H3" />
+              </svg>
+            </button>
+          </form>
         </div>
       </header>
 
