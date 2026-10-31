@@ -1,292 +1,10 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { login, type LoginState } from "./actions";
-
-// ---------------------------------------------------------------------------------------------
-// Preview data for the hero. Deliberately synthetic: nothing from ERPNext is shown before sign-in.
-// Seeded so server and client render the same figures.
-// ---------------------------------------------------------------------------------------------
-interface Day {
-  label: string;
-  sales: number;
-  cost: number;
-  bills: number;
-}
-
-function buildDays(): Day[] {
-  let seed = 20261031;
-  const rand = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
-  const weekday = [1.18, 0.88, 0.9, 0.93, 0.97, 1.12, 1.24]; // Sun..Sat
-  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const start = new Date(2026, 9, 2);
-  return Array.from({ length: 30 }, (_, i) => {
-    const d = new Date(start);
-    d.setDate(start.getDate() + i);
-    const trend = 1 + i * 0.006;
-    const sales = Math.round(132000 * weekday[d.getDay()] * trend * (0.92 + rand() * 0.16));
-    const cost = Math.round(sales * (0.55 + rand() * 0.09));
-    return { label: `${names[d.getDay()]} ${d.getDate()} Oct`, sales, cost, bills: Math.round(sales / (235 + rand() * 40)) };
-  });
-}
-
-const COST_MIX = [
-  { name: "Flour & grains", share: 34 },
-  { name: "Dairy & butter", share: 22 },
-  { name: "Sugar & sweeteners", share: 14 },
-  { name: "Packaging", share: 11 },
-  { name: "Fuel & power", share: 10 },
-  { name: "Other inputs", share: 9 },
-];
-
-type Mode = "sales" | "costing" | "margin";
-const MODES: { id: Mode; label: string }[] = [
-  { id: "sales", label: "Sales" },
-  { id: "costing", label: "Costing" },
-  { id: "margin", label: "Margin" },
-];
-
-const pkr = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : `${Math.round(n)}`);
-
-/** Animates from 0 to `value` once on mount, then follows `value` directly. */
-function useCountUp(value: number, ms = 1400) {
-  const [shown, setShown] = useState(0);
-  const done = useRef(false);
-  useEffect(() => {
-    if (done.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      done.current = true;
-      setShown(value);
-      return;
-    }
-    let raf = 0;
-    const t0 = performance.now();
-    const tick = (t: number) => {
-      const p = Math.min(1, (t - t0) / ms);
-      setShown(value * (1 - Math.pow(1 - p, 3)));
-      if (p < 1) raf = requestAnimationFrame(tick);
-      else done.current = true;
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [value, ms]);
-  return shown;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Interactive sales & costing preview
-// ---------------------------------------------------------------------------------------------
-const W = 600;
-const H = 210;
-const PAD = { l: 8, r: 8, t: 14, b: 22 };
-
-function Kpi({ label, value, sub, tone }: { label: string; value: string; sub: string; tone: string }) {
-  return (
-    <div className="min-w-0 rounded-xl border border-white/[0.07] bg-white/[0.03] px-3 py-2.5">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium text-white/50">
-        <span className="h-1.5 w-1.5 rounded-full" style={{ background: tone }} />
-        {label}
-      </div>
-      <div className="tnum mt-1 truncate text-lg font-semibold tracking-tight text-white">{value}</div>
-      <div className="tnum truncate text-[11px] text-white/40">{sub}</div>
-    </div>
-  );
-}
-
-function PreviewBoard() {
-  const days = useMemo(() => buildDays(), []);
-  const [mode, setMode] = useState<Mode>("sales");
-  const [hover, setHover] = useState<number | null>(null);
-  const [mixHover, setMixHover] = useState<number | null>(null);
-
-  const totals = useMemo(() => {
-    const sales = days.reduce((a, d) => a + d.sales, 0);
-    const cost = days.reduce((a, d) => a + d.cost, 0);
-    return { sales, cost, bills: days.reduce((a, d) => a + d.bills, 0) };
-  }, [days]);
-
-  const animSales = useCountUp(totals.sales);
-  const animCost = useCountUp(totals.cost);
-  const animBills = useCountUp(totals.bills);
-
-  const d = hover !== null ? days[hover] : null;
-  const sales = d ? d.sales : animSales;
-  const cost = d ? d.cost : animCost;
-  const bills = d ? d.bills : animBills;
-  const marginPct = sales > 0 ? ((sales - cost) / sales) * 100 : 0;
-
-  const max = Math.max(...days.map((x) => x.sales)) * 1.08;
-  const x = (i: number) => PAD.l + (i / (days.length - 1)) * (W - PAD.l - PAD.r);
-  const y = (v: number) => PAD.t + (1 - v / max) * (H - PAD.t - PAD.b);
-  const line = (key: "sales" | "cost") => days.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
-  const area = (key: "sales" | "cost") => `${line(key)} L${x(days.length - 1)},${H - PAD.b} L${x(0)},${H - PAD.b} Z`;
-
-  const mPct = days.map((p) => ((p.sales - p.cost) / p.sales) * 100);
-  const mMin = 30;
-  const mMax = 50;
-  const my = (v: number) => PAD.t + (1 - (v - mMin) / (mMax - mMin)) * (H - PAD.t - PAD.b);
-  const marginLine = mPct.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${my(v).toFixed(1)}`).join(" ");
-
-  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const rel = ((e.clientX - r.left) / r.width) * W;
-    const i = Math.round(((rel - PAD.l) / (W - PAD.l - PAD.r)) * (days.length - 1));
-    setHover(Math.max(0, Math.min(days.length - 1, i)));
-  };
-
-  const salesOn = mode !== "margin";
-  const costOn = mode !== "margin";
-  const tipLeft = hover !== null ? (x(hover) / W) * 100 : 0;
-
-  return (
-    <div className="login-rise relative rounded-2xl border border-white/[0.08] bg-[#0b0d12]/80 p-4 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.7)] backdrop-blur-xl sm:p-5" style={{ animationDelay: "120ms" }}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-semibold text-white">
-            <span className="live-dot live-dot-on" />
-            Live board preview
-          </div>
-          <div className="text-[11px] text-white/40">{d ? d.label : "Last 30 days"} · illustrative figures, PKR</div>
-        </div>
-        <div role="tablist" aria-label="Preview metric" className="flex rounded-lg border border-white/[0.08] bg-white/[0.03] p-0.5">
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              role="tab"
-              aria-selected={mode === m.id}
-              onClick={() => setMode(m.id)}
-              className={`rounded-md px-3 py-1 text-xs font-medium transition ${mode === m.id ? "bg-white text-[#0b0d12] shadow" : "text-white/60 hover:text-white"}`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Kpi label="Net sales" value={`Rs ${pkr(sales)}`} sub={d ? `${bills.toFixed(0)} bills` : `${Math.round(bills).toLocaleString("en-US")} bills`} tone="#4f97f0" />
-        <Kpi label="Cost of goods" value={`Rs ${pkr(cost)}`} sub={`${sales ? ((cost / sales) * 100).toFixed(1) : "0.0"}% of sales`} tone="#ff8a4c" />
-        <Kpi label="Gross margin" value={`${marginPct.toFixed(1)}%`} sub={`Rs ${pkr(sales - cost)} kept`} tone="#22c58b" />
-        <Kpi label="Avg bill" value={`Rs ${bills > 0 ? Math.round(sales / bills).toLocaleString("en-US") : "0"}`} sub="per customer" tone="#f5b14c" />
-      </div>
-
-      <div className="relative mt-4">
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          className="block h-auto w-full cursor-crosshair touch-none select-none"
-          onPointerMove={onMove}
-          onPointerDown={onMove}
-          onPointerLeave={() => setHover(null)}
-          role="img"
-          aria-label="Illustrative 30-day chart of sales, cost of goods and gross margin"
-        >
-          <defs>
-            <linearGradient id="lg-sales" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#4f97f0" stopOpacity="0.45" />
-              <stop offset="100%" stopColor="#4f97f0" stopOpacity="0" />
-            </linearGradient>
-            <linearGradient id="lg-cost" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#ff8a4c" stopOpacity="0.4" />
-              <stop offset="100%" stopColor="#ff8a4c" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          {[0.25, 0.5, 0.75].map((f) => (
-            <line key={f} x1={PAD.l} x2={W - PAD.r} y1={PAD.t + f * (H - PAD.t - PAD.b)} y2={PAD.t + f * (H - PAD.t - PAD.b)} stroke="rgba(255,255,255,0.06)" strokeDasharray="3 5" />
-          ))}
-
-          {/* margin bars (sales - cost per day) */}
-          {mode === "margin" &&
-            days.map((p, i) => {
-              const bw = ((W - PAD.l - PAD.r) / days.length) * 0.62;
-              const top = my(mPct[i]);
-              return (
-                <rect
-                  key={p.label}
-                  className="login-bar"
-                  style={{ animationDelay: `${i * 18}ms` }}
-                  x={x(i) - bw / 2}
-                  y={top}
-                  width={bw}
-                  height={H - PAD.b - top}
-                  rx={2}
-                  fill={hover === i ? "#22c58b" : "rgba(34,197,139,0.35)"}
-                />
-              );
-            })}
-
-          <g style={{ opacity: salesOn ? (mode === "costing" ? 0.35 : 1) : 0, transition: "opacity .4s" }}>
-            <path d={area("sales")} fill="url(#lg-sales)" />
-            <path key={`s-${mode}`} className="login-draw" d={line("sales")} fill="none" stroke="#4f97f0" strokeWidth="2.2" strokeLinejoin="round" pathLength={1} />
-          </g>
-          <g style={{ opacity: costOn ? (mode === "sales" ? 0.45 : 1) : 0, transition: "opacity .4s" }}>
-            <path d={area("cost")} fill="url(#lg-cost)" />
-            <path key={`c-${mode}`} className="login-draw" d={line("cost")} fill="none" stroke="#ff8a4c" strokeWidth="2" strokeLinejoin="round" pathLength={1} style={{ animationDelay: "150ms" }} />
-          </g>
-          {mode === "margin" && <path key="m" className="login-draw" d={marginLine} fill="none" stroke="#5ff0b8" strokeWidth="2" strokeLinejoin="round" pathLength={1} />}
-
-          {hover !== null && (
-            <g pointerEvents="none">
-              <line x1={x(hover)} x2={x(hover)} y1={PAD.t - 6} y2={H - PAD.b} stroke="rgba(255,255,255,0.35)" strokeDasharray="2 3" />
-              {mode !== "margin" ? (
-                <>
-                  <circle cx={x(hover)} cy={y(days[hover].sales)} r="4.5" fill="#0b0d12" stroke="#4f97f0" strokeWidth="2" />
-                  <circle cx={x(hover)} cy={y(days[hover].cost)} r="4.5" fill="#0b0d12" stroke="#ff8a4c" strokeWidth="2" />
-                </>
-              ) : (
-                <circle cx={x(hover)} cy={my(mPct[hover])} r="4.5" fill="#0b0d12" stroke="#5ff0b8" strokeWidth="2" />
-              )}
-            </g>
-          )}
-          {[0, 7, 14, 21, 29].map((i) => (
-            <text key={i} x={x(i)} y={H - 5} textAnchor={i === 0 ? "start" : i === 29 ? "end" : "middle"} fill="rgba(255,255,255,0.35)" fontSize="10">
-              {days[i].label.slice(4)}
-            </text>
-          ))}
-        </svg>
-
-        {d && (
-          <div
-            className="pointer-events-none absolute top-0 z-10 rounded-lg border border-white/10 bg-[#11141b]/95 px-2.5 py-1.5 text-[11px] shadow-xl backdrop-blur"
-            style={{ left: `${tipLeft}%`, transform: `translateX(${tipLeft > 70 ? "calc(-100% - 10px)" : "10px"})` }}
-          >
-            <div className="font-semibold text-white">{d.label}</div>
-            <div className="tnum mt-0.5 flex gap-3 text-white/60">
-              <span><span className="text-[#4f97f0]">●</span> Rs {pkr(d.sales)}</span>
-              <span><span className="text-[#ff8a4c]">●</span> Rs {pkr(d.cost)}</span>
-              <span><span className="text-[#22c58b]">●</span> {(((d.sales - d.cost) / d.sales) * 100).toFixed(1)}%</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* cost head mix */}
-      <div className="mt-4 border-t border-white/[0.06] pt-3">
-        <div className="mb-2 flex items-center justify-between text-[11px] text-white/45">
-          <span>Where the cost goes</span>
-          <span className="tnum text-white/70">{mixHover !== null ? `${COST_MIX[mixHover].name} · ${COST_MIX[mixHover].share}%` : "hover a segment"}</span>
-        </div>
-        <div className="flex h-2.5 overflow-hidden rounded-full bg-white/[0.04]" onPointerLeave={() => setMixHover(null)}>
-          {COST_MIX.map((c, i) => (
-            <div
-              key={c.name}
-              onPointerEnter={() => setMixHover(i)}
-              className="login-grow h-full cursor-pointer transition-opacity"
-              style={{
-                width: `${c.share}%`,
-                animationDelay: `${300 + i * 80}ms`,
-                background: `color-mix(in srgb, #ff8a4c ${100 - i * 13}%, #f5b14c)`,
-                opacity: mixHover === null || mixHover === i ? 1 : 0.3,
-                marginRight: i < COST_MIX.length - 1 ? 2 : 0,
-              }}
-              title={`${c.name} · ${c.share}%`}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
+import BakeryScene from "./BakeryScene";
+import { MODES, type SceneMode } from "./sceneData";
 
 // ---------------------------------------------------------------------------------------------
 // Sign-in form
@@ -439,34 +157,121 @@ function SignInCard({ next, configured }: { next: string; configured: boolean })
 }
 
 // ---------------------------------------------------------------------------------------------
+// 3D tilt for the sign-in card
+// ---------------------------------------------------------------------------------------------
+function TiltCard({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const move = (e: React.PointerEvent) => {
+    const el = ref.current;
+    if (!el || e.pointerType !== "mouse" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const r = el.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width;
+    const py = (e.clientY - r.top) / r.height;
+    el.style.setProperty("--rx", `${(0.5 - py) * 7}deg`);
+    el.style.setProperty("--ry", `${(px - 0.5) * 9}deg`);
+    el.style.setProperty("--gx", `${px * 100}%`);
+    el.style.setProperty("--gy", `${py * 100}%`);
+  };
+  const leave = () => {
+    ref.current?.style.setProperty("--rx", "0deg");
+    ref.current?.style.setProperty("--ry", "0deg");
+  };
+  return (
+    <div className="login-tilt-wrap w-full max-w-[440px]" onPointerMove={move} onPointerLeave={leave}>
+      <div ref={ref} className="login-tilt relative">
+        {children}
+        <div className="login-glare pointer-events-none absolute inset-0 rounded-[22px]" aria-hidden />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Feature tabs: each one reshapes the 3D board
+// ---------------------------------------------------------------------------------------------
+const CYCLE_MS = 6000;
+
+function FeatureTabs({ mode, onPick, cycling }: { mode: SceneMode; onPick: (m: SceneMode) => void; cycling: boolean }) {
+  return (
+    <div role="tablist" aria-label="What is inside the dashboard" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {MODES.map((m) => {
+        const active = m.id === mode;
+        return (
+          <button
+            key={m.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onPick(m.id)}
+            onPointerEnter={(e) => e.pointerType === "mouse" && onPick(m.id)}
+            onFocus={() => onPick(m.id)}
+            className={`group relative flex items-center gap-2.5 overflow-hidden rounded-xl border px-3 py-2.5 text-left transition ${
+              active ? "border-white/20 bg-white/[0.07]" : "border-white/[0.06] bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]"
+            }`}
+            style={active ? { boxShadow: `0 0 0 1px ${m.color}55, 0 12px 30px -14px ${m.color}` } : undefined}
+          >
+            <span
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition"
+              style={{ background: active ? `${m.color}26` : "rgba(255,255,255,0.05)", color: active ? m.color : "rgba(255,255,255,0.55)" }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                <path d={m.icon} />
+              </svg>
+            </span>
+            <span className={`truncate text-[13px] font-semibold ${active ? "text-white" : "text-white/65"}`}>{m.tab}</span>
+            {active && cycling && (
+              <span key={m.id} className="login-progress absolute inset-x-0 bottom-0 h-[2px] origin-left" style={{ background: m.color, animationDuration: `${CYCLE_MS}ms` }} />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------------------------
-const FEATURES = [
-  { title: "Live sales board", body: "Today against the usual weekday, hour by hour", icon: "M3 17l5-5 4 4 8-8M15 8h5v5" },
-  { title: "Costing per item", body: "Recipe cost, food cost % and margin", icon: "M4 19V9m6 10V5m6 14v-7m4 7H2" },
-  { title: "Production forecast", body: "Tomorrow's bake plan from real demand", icon: "M12 3v4m0 10v4M3 12h4m10 0h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6" },
-  { title: "Ask by voice", body: "“Aaj ki sale kitni hai?” — answered on screen", icon: "M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3zM5 11a7 7 0 0014 0M12 18v3" },
-];
-
 export default function LoginView({ next, configured }: { next: string; configured: boolean }) {
   const root = useRef<HTMLDivElement>(null);
+  const [mode, setMode] = useState<SceneMode>("sales");
+  const [cycling, setCycling] = useState(true);
+  const info = MODES.find((m) => m.id === mode)!;
+
+  // Walk through the features until the visitor picks one.
+  useEffect(() => {
+    if (!cycling || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const t = setTimeout(() => {
+      const i = MODES.findIndex((m) => m.id === mode);
+      setMode(MODES[(i + 1) % MODES.length].id);
+    }, CYCLE_MS);
+    return () => clearTimeout(t);
+  }, [mode, cycling]);
+
+  const pick = (m: SceneMode) => {
+    setCycling(false);
+    setMode(m);
+  };
 
   const onMove = (e: React.PointerEvent) => {
-    const el = root.current;
-    if (!el) return;
-    el.style.setProperty("--mx", `${e.clientX}px`);
-    el.style.setProperty("--my", `${e.clientY}px`);
+    root.current?.style.setProperty("--mx", `${e.clientX}px`);
+    root.current?.style.setProperty("--my", `${e.clientY}px`);
   };
 
   return (
-    <div ref={root} onPointerMove={onMove} className="login-root relative min-h-screen overflow-hidden bg-[#06070a] text-white">
+    <div ref={root} onPointerMove={onMove} className="login-root relative min-h-screen overflow-clip bg-[#05060a] text-white">
       {/* backdrop: grid, glows and a spotlight that follows the pointer */}
       <div className="login-grid pointer-events-none absolute inset-0" aria-hidden />
-      <div className="login-float pointer-events-none absolute -left-40 top-[-10%] h-[520px] w-[520px] rounded-full bg-[#3987e5]/25 blur-[120px]" aria-hidden />
-      <div className="login-float pointer-events-none absolute -right-32 bottom-[-15%] h-[560px] w-[560px] rounded-full bg-[#ff8a4c]/20 blur-[130px]" style={{ animationDelay: "-6s" }} aria-hidden />
+      <div className="login-float pointer-events-none absolute -left-40 top-[-10%] h-[520px] w-[520px] rounded-full bg-[#3987e5]/20 blur-[120px]" aria-hidden />
+      <div className="login-float pointer-events-none absolute -right-32 bottom-[-15%] h-[560px] w-[560px] rounded-full bg-[#ff8a4c]/15 blur-[130px]" style={{ animationDelay: "-6s" }} aria-hidden />
+      <div
+        className="pointer-events-none absolute left-[30%] top-[45%] h-[460px] w-[620px] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[140px] transition-colors duration-1000"
+        style={{ background: `${info.color}1f` }}
+        aria-hidden
+      />
       <div className="login-spot pointer-events-none absolute inset-0" aria-hidden />
 
-      <div className="relative mx-auto flex min-h-screen max-w-[1320px] flex-col px-4 py-6 sm:px-8 lg:py-8">
+      <div className="relative mx-auto flex min-h-screen max-w-[1360px] flex-col px-4 py-6 sm:px-8 lg:py-8">
         <header className="login-rise flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="relative flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-[#3987e5] to-[#ff8a4c] text-[15px] font-bold tracking-tight shadow-[0_8px_24px_-8px_rgba(57,135,229,0.9)]">
@@ -474,7 +279,7 @@ export default function LoginView({ next, configured }: { next: string; configur
             </div>
             <div>
               <div className="text-[17px] font-semibold leading-tight">Sindh Bakery</div>
-              <div className="text-xs text-white/45">Sales &amp; Costing Intelligence</div>
+              <div className="text-xs text-white/45">Sales, Costing &amp; Production Intelligence</div>
             </div>
           </div>
           <div className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3.5 py-1.5 text-xs text-white/60 backdrop-blur sm:flex">
@@ -483,54 +288,71 @@ export default function LoginView({ next, configured }: { next: string; configur
           </div>
         </header>
 
-        <main className="grid flex-1 items-center gap-10 py-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] lg:gap-14">
-          <section className="order-2 flex min-w-0 flex-col gap-7 lg:order-1">
-            <div className="login-rise flex flex-col gap-5" style={{ animationDelay: "60ms" }}>
+        <main className="grid flex-1 items-center gap-8 py-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)] lg:gap-10">
+          <section className="order-2 flex min-w-0 flex-col gap-5 lg:order-1">
+            <div className="login-rise flex flex-col gap-4" style={{ animationDelay: "60ms" }}>
               <span className="inline-flex w-fit items-center gap-2 rounded-full border border-[#4f97f0]/30 bg-[#4f97f0]/10 px-3 py-1 text-xs font-medium text-[#9cc5ff]">
                 <span className="live-dot live-dot-on" style={{ width: 6, height: 6 }} />
-                Sales · Costing · Forecast — one board
+                Sales · Costing · Forecast · Stock — one board
               </span>
-              <h1 className="text-[38px] font-semibold leading-[1.05] tracking-[-0.03em] sm:text-5xl xl:text-[58px]">
+              <h1 className="text-[36px] font-semibold leading-[1.04] tracking-[-0.03em] sm:text-5xl xl:text-[56px]">
                 Every sale, every cost,
                 <br />
                 <span className="bg-gradient-to-r from-[#6aa8ff] via-[#f5b14c] to-[#ff8a4c] bg-clip-text text-transparent">baked into one view.</span>
               </h1>
-              <p className="max-w-[560px] text-[15px] leading-relaxed text-white/55 sm:text-base">
+              <p className="max-w-[580px] text-[15px] leading-relaxed text-white/55 sm:text-base">
                 Follow the counter live, see what each loaf and cake really costs to make, and know tomorrow&apos;s bake before the ovens are on.
               </p>
             </div>
 
-            <PreviewBoard />
+            {/* the 3D board */}
+            <div className="login-rise relative" style={{ animationDelay: "140ms" }}>
+              <div className="relative h-[280px] sm:h-[400px] lg:h-[440px]">
+                <BakeryScene mode={mode} className="login-scene-mask absolute -inset-x-6 -inset-y-4 sm:-inset-x-10" />
 
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              {FEATURES.map((f, i) => (
-                <div
-                  key={f.title}
-                  className="login-rise group flex items-start gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5 transition hover:border-white/15 hover:bg-white/[0.04]"
-                  style={{ animationDelay: `${240 + i * 70}ms` }}
-                >
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-[#9cc5ff] transition group-hover:text-[#f5b14c]">
-                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d={f.icon} />
-                    </svg>
-                  </span>
-                  <span>
-                    <span className="block text-sm font-semibold text-white">{f.title}</span>
-                    <span className="block text-[12.5px] leading-snug text-white/45">{f.body}</span>
-                  </span>
+                <div className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 rounded-full border border-white/[0.08] bg-[#0b0d12]/70 px-2.5 py-1 text-[11px] text-white/45 backdrop-blur sm:flex">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M9 11V5a2 2 0 014 0v6m0-2a2 2 0 014 0v4a6 6 0 01-6 6h-1a6 6 0 01-5.2-3L3 14a2 2 0 013.4-2l2.6 3" />
+                  </svg>
+                  Move &amp; hover the bars · illustrative data
                 </div>
-              ))}
+              </div>
+
+              <div
+                key={info.id}
+                className="login-swap relative mt-2 w-full rounded-2xl sm:absolute sm:bottom-0 sm:left-0 sm:mt-0 sm:w-[340px] border border-white/[0.08] bg-[#0b0d12]/80 p-3.5 shadow-[0_24px_60px_-24px_rgba(0,0,0,0.9)] backdrop-blur-xl"
+              >
+                <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <span className="h-2 w-2 rounded-full" style={{ background: info.color, boxShadow: `0 0 12px ${info.color}` }} />
+                  {info.title}
+                </div>
+                <p className="mt-1 text-[12px] leading-snug text-white/50">{info.body}</p>
+                <div className="mt-3 grid grid-cols-3 gap-1.5">
+                  {info.kpis.map((k) => (
+                    <div key={k.label} className="min-w-0 rounded-lg bg-white/[0.04] px-2 py-1.5">
+                      <div className="truncate text-[10px] text-white/40">{k.label}</div>
+                      <div className="tnum truncate text-[13px] font-semibold text-white">{k.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="login-rise" style={{ animationDelay: "220ms" }}>
+              <FeatureTabs mode={mode} onPick={pick} cycling={cycling} />
             </div>
           </section>
 
           <section className="order-1 flex justify-center lg:sticky lg:top-8 lg:order-2 lg:justify-end">
-            <SignInCard next={next} configured={configured} />
+            <TiltCard>
+              <SignInCard next={next} configured={configured} />
+            </TiltCard>
           </section>
         </main>
 
         <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-5 text-xs text-white/35">
           <span>© {new Date().getFullYear()} Sindh Bakery · Confidential company data</span>
-          <span>No figures are shown until you sign in</span>
+          <span>No real figures are shown until you sign in</span>
         </footer>
       </div>
     </div>
